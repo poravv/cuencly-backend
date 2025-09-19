@@ -250,9 +250,41 @@ class InvoiceSync:
         Returns:
             JobStatus: Estado actual del trabajo.
         """
-        # Actualizar el tiempo de la próxima ejecución si el job está corriendo
-        if self._job_status.running:
-            self._job_status.next_run = self._calculate_next_run()
+        # Preferir estado real reportado por el scheduler si está disponible
+        try:
+            if hasattr(self.email_processor, 'scheduled_job_status'):
+                sched = self.email_processor.scheduled_job_status()
+                if isinstance(sched, dict) and sched:
+                    self._job_status.running = bool(sched.get('running', False))
+                    # Convertir next_run y last_run a ISO
+                    def _to_iso(v):
+                        from datetime import datetime
+                        try:
+                            if v is None:
+                                return None
+                            if isinstance(v, (int, float)):
+                                return datetime.fromtimestamp(v).isoformat()
+                            # ya es iso o datetime string
+                            return str(v)
+                        except Exception:
+                            return None
+                    self._job_status.next_run = _to_iso(sched.get('next_run'))
+                    self._job_status.last_run = _to_iso(sched.get('last_run'))
+                    self._job_status.interval_minutes = int(sched.get('interval_minutes', self._job_status.interval_minutes))
+                    # last_result si viene como ProcessResult compatible
+                    lr = sched.get('last_result')
+                    try:
+                        self._job_status.last_result = lr if lr is None else lr
+                    except Exception:
+                        pass
+            else:
+                # Estimación si no hay estado del scheduler
+                if self._job_status.running:
+                    self._job_status.next_run = self._calculate_next_run()
+        except Exception:
+            # Respaldo: estimación simple
+            if self._job_status.running:
+                self._job_status.next_run = self._calculate_next_run()
         
         return self._job_status
 

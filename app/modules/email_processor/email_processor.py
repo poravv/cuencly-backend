@@ -365,6 +365,8 @@ class EmailProcessor:
             username=self.config.username, password=self.config.password, mailbox="INBOX"
         )
         self.openai_processor = OpenAIProcessor()
+        # Estado para scheduler legacy
+        self._last_run_iso: Optional[str] = None
 
         ensure_dirs()
         logger.info(f"✅ EmailProcessor inicializado con pool de conexiones para {self.config.username}")
@@ -658,6 +660,11 @@ class EmailProcessor:
 
     def _run_job(self):
         logger.info("Ejecutando job programado para procesar correos")
+        try:
+            from datetime import datetime
+            self._last_run_iso = datetime.now().isoformat()
+        except Exception:
+            self._last_run_iso = None
         res = self.process_emails()
         (logger.info if res.success else logger.error)(res.message)
         return res
@@ -680,4 +687,30 @@ class EmailProcessor:
             logger.info(f"Reiniciando job con nuevo intervalo: {minutes} min")
             schedule.every(minutes).minutes.do(self._run_job)
         return {"ok": True, "interval_minutes": minutes}
+
+    def scheduled_job_status(self):
+        """Snapshot del scheduler legacy (schedule)."""
+        try:
+            import schedule
+            next_run_iso = None
+            if getattr(self, "_job_running", False) and getattr(schedule, "next_run", None):
+                try:
+                    next_run_iso = schedule.next_run.isoformat()
+                except Exception:
+                    next_run_iso = str(schedule.next_run)
+            return {
+                "running": bool(getattr(self, "_job_running", False)),
+                "next_run": next_run_iso,
+                "last_run": self._last_run_iso,
+                "interval_minutes": settings.JOB_INTERVAL_MINUTES,
+                "last_result": None
+            }
+        except Exception:
+            return {
+                "running": bool(getattr(self, "_job_running", False)),
+                "next_run": None,
+                "last_run": self._last_run_iso,
+                "interval_minutes": settings.JOB_INTERVAL_MINUTES,
+                "last_result": None
+            }
     
