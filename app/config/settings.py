@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 load_dotenv(encoding="utf-8")
 
 class Settings(BaseSettings):
-    # Configuraciones de Email (compatibilidad hacia atrás)
-    EMAIL_HOST: str = os.getenv("EMAIL_HOST", "mail.mindtechpy.net")
+    # Configuraciones de Email (deprecadas: se gestionan vía MongoDB)
+    EMAIL_HOST: str = os.getenv("EMAIL_HOST", "")
     EMAIL_PORT: int = int(os.getenv("EMAIL_PORT", 993))
     EMAIL_USERNAME: str = os.getenv("EMAIL_USERNAME", "")
     EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "")
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     POSTPROCESS_ENABLE_RECONCILE: bool = (os.getenv("POSTPROCESS_ENABLE_RECONCILE", "true").lower() == "true")
     POSTPROCESS_RECONCILE_TOLERANCE: int = int(os.getenv("POSTPROCESS_RECONCILE_TOLERANCE", 2))
     
-    # Configuraciones para múltiples correos
+    # Configuraciones para múltiples correos (legacy, sin uso)
     EMAILS_CONFIG: List[Dict[str, Any]] = []
     
     # Configuraciones de la App
@@ -61,45 +61,15 @@ class Settings(BaseSettings):
             # Fallback para el formato antiguo
             self.EMAIL_SEARCH_TERMS = [term.strip() for term in search_terms_str.split(",")]
         
-        # Procesamiento para múltiples correos
-        emails_config_str = os.getenv("EMAILS_CONFIG", "[]")
-        try:
-            self.EMAILS_CONFIG = json.loads(emails_config_str)
-        except json.JSONDecodeError:
-            self.EMAILS_CONFIG = []
-        
-        # Si no hay configuraciones múltiples, usar la configuración simple como fallback
-        if not self.EMAILS_CONFIG and self.EMAIL_USERNAME:
-            self.EMAILS_CONFIG = [{
-                "name": "Primary Email",
-                "host": self.EMAIL_HOST,
-                "port": self.EMAIL_PORT,
-                "username": self.EMAIL_USERNAME,
-                "password": self.EMAIL_PASSWORD,
-                "use_ssl": self.EMAIL_USE_SSL,
-                "search_criteria": self.EMAIL_SEARCH_CRITERIA,
-                "search_terms": self.EMAIL_SEARCH_TERMS,
-                "provider": "other"
-            }]
+        # Deshabilitar carga de EMAILS_CONFIG desde .env (se usa MongoDB)
+        self.EMAILS_CONFIG = []
     
     def get_gmail_configs(self) -> List[Dict[str, Any]]:
-        """Retorna configuraciones optimizadas para Gmail."""
-        gmail_configs = []
-        for config in self.EMAILS_CONFIG:
-            if config.get("provider") == "gmail":
-                # Configuración automática para Gmail
-                gmail_config = config.copy()
-                gmail_config.update({
-                    "host": "imap.gmail.com",
-                    "port": 993,
-                    "use_ssl": True,
-                    "search_criteria": "UNSEEN"
-                })
-                gmail_configs.append(gmail_config)
-        return gmail_configs
+        """Deprecated: configs are stored in MongoDB now."""
+        return []
     
     def get_all_email_configs(self) -> List[Dict[str, Any]]:
-        """Retorna todas las configuraciones de correo."""
-        return self.EMAILS_CONFIG
+        """Deprecated: use MongoDB config store via API."""
+        return []
 
 settings = Settings()

@@ -234,11 +234,12 @@ InvoiceData = InvoiceDataASCONT
 # -----------------------
 class MultiEmailConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-    name: str
+    id: Optional[str] = None
+    name: Optional[str] = ""
     host: str
     port: int
     username: str
-    password: str
+    password: Optional[str] = None
     use_ssl: bool = True
     search_criteria: str = "UNSEEN"
     search_terms: Optional[List[str]] = None

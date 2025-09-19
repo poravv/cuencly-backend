@@ -25,7 +25,16 @@ from app.modules.email_processor.storage import save_binary
 from app.modules.prefs.prefs import get_auto_refresh as prefs_get_auto_refresh, set_auto_refresh as prefs_set_auto_refresh
 from app.modules.excel_exporter import ExcelExporterCompleto, MongoDBExporter
 from app.modules.mongo_query_service import get_mongo_query_service
-from app.modules.email_processor.config_store import list_configs as db_list_configs, create_config as db_create_config, update_config as db_update_config, delete_config as db_delete_config
+from app.modules.email_processor.config_store import (
+    list_configs as db_list_configs,
+    create_config as db_create_config,
+    update_config as db_update_config,
+    delete_config as db_delete_config,
+    set_enabled as db_set_enabled,
+    toggle_enabled as db_toggle_enabled,
+    get_by_id as db_get_by_id,
+    get_by_username as db_get_by_username,
+)
 
 # Configurar logging
 logging.basicConfig(
@@ -72,6 +81,9 @@ class AutoRefreshPref(BaseModel):
     uid: str
     enabled: bool
     interval_ms: int
+
+class ToggleEnabledPayload(BaseModel):
+    enabled: bool
 
 # Tarea en segundo plano para procesar correos
 def process_emails_task():
@@ -565,14 +577,25 @@ async def test_email_config(config: MultiEmailConfig):
         from app.modules.email_processor.email_processor import EmailProcessor
         from app.models.models import EmailConfig
         
+        # Resolver password ausente con DB por id o username
+        pwd = config.password
+        if not pwd:
+            db_cfg = None
+            if config.id:
+                db_cfg = db_get_by_id(config.id, include_password=True)
+            if not db_cfg and config.username:
+                db_cfg = db_get_by_username(config.username, include_password=True)
+            if db_cfg and db_cfg.get("password"):
+                pwd = db_cfg.get("password")
+
         # Crear configuración temporal para probar
         test_config = EmailConfig(
             host=config.host,
             port=config.port,
             username=config.username,
-            password=config.password,
+            password=pwd or "",
             search_criteria=config.search_criteria,
-            search_terms=config.search_terms
+            search_terms=config.search_terms or []
         )
         
         # Crear procesador temporal
@@ -590,6 +613,40 @@ async def test_email_config(config: MultiEmailConfig):
     except Exception as e:
         logger.error(f"Error al probar configuración de correo: {str(e)}")
         return {"success": False, "message": f"Error: {str(e)}"}
+
+@app.post("/email-configs/{config_id}/test")
+async def test_email_config_by_id(config_id: str):
+    """Prueba una configuración guardada, identificada por su ID en MongoDB."""
+    try:
+        from app.modules.email_processor.email_processor import EmailProcessor
+        from app.models.models import EmailConfig
+
+        db_cfg = db_get_by_id(config_id, include_password=True)
+        if not db_cfg:
+            raise HTTPException(status_code=404, detail="Configuración no encontrada")
+
+        test_config = EmailConfig(
+            host=db_cfg.get("host"),
+            port=int(db_cfg.get("port", 993)),
+            username=db_cfg.get("username"),
+            password=db_cfg.get("password") or "",
+            search_criteria=db_cfg.get("search_criteria") or "UNSEEN",
+            search_terms=db_cfg.get("search_terms") or []
+        )
+
+        processor = EmailProcessor(test_config)
+        success = processor.connect()
+        processor.disconnect()
+
+        if success:
+            return {"success": True, "message": "Conexión exitosa"}
+        else:
+            return {"success": False, "message": "Error al conectar"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al probar configuración por ID: {e}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
 # -----------------------------
@@ -609,6 +666,9 @@ async def list_email_configs():
 @app.post("/email-configs")
 async def create_email_config(config: MultiEmailConfig):
     try:
+        # Validar que password esté presente al crear
+        if not config.password:
+            raise HTTPException(status_code=400, detail="La contraseña es obligatoria al crear una cuenta")
         cfg_dict = config.model_dump()
         cfg_id = db_create_config(cfg_dict)
         return {"success": True, "id": cfg_id}
@@ -620,7 +680,11 @@ async def create_email_config(config: MultiEmailConfig):
 @app.put("/email-configs/{config_id}")
 async def update_email_config(config_id: str, config: MultiEmailConfig):
     try:
-        ok = db_update_config(config_id, config.model_dump())
+        update_data = config.model_dump()
+        # Evitar sobreescribir password a null si no se envía
+        if update_data.get("password") in (None, ""):
+            update_data.pop("password", None)
+        ok = db_update_config(config_id, update_data)
         if not ok:
             raise HTTPException(status_code=404, detail="Configuración no encontrada")
         return {"success": True, "id": config_id}
@@ -643,6 +707,34 @@ async def delete_email_config(config_id: str):
     except Exception as e:
         logger.error(f"Error eliminando configuración de correo: {e}")
         raise HTTPException(status_code=500, detail="No se pudo eliminar configuración")
+
+
+@app.patch("/email-configs/{config_id}/enabled")
+async def set_email_config_enabled(config_id: str, payload: ToggleEnabledPayload):
+    try:
+        ok = db_set_enabled(config_id, bool(payload.enabled))
+        if not ok:
+            raise HTTPException(status_code=404, detail="Configuración no encontrada")
+        return {"success": True, "enabled": bool(payload.enabled)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error actualizando 'enabled' de configuración: {e}")
+        raise HTTPException(status_code=500, detail="No se pudo actualizar el estado")
+
+
+@app.post("/email-configs/{config_id}/toggle")
+async def toggle_email_config_enabled(config_id: str):
+    try:
+        new_val = db_toggle_enabled(config_id)
+        if new_val is None:
+            raise HTTPException(status_code=404, detail="Configuración no encontrada")
+        return {"success": True, "enabled": new_val}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error alternando 'enabled' de configuración: {e}")
+        raise HTTPException(status_code=500, detail="No se pudo alternar el estado")
 
 
 @app.get("/health")

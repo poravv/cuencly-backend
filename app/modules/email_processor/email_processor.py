@@ -91,6 +91,15 @@ class MultiEmailProcessor:
 
         logger.info(f"Iniciando procesamiento de {len(self.email_configs)} cuentas de correo")
 
+        if not self.email_configs:
+            return ProcessResult(
+                success=False,
+                message="No hay cuentas de correo configuradas. Agregue al menos una desde la UI.",
+                invoice_count=0,
+                invoices=[],
+                excel_files=[]
+            )
+
         for idx, cfg in enumerate(self.email_configs):
             logger.info(f"Procesando cuenta {idx + 1}/{len(self.email_configs)}: {cfg.username}")
             try:

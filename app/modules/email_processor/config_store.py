@@ -138,3 +138,60 @@ def delete_config(config_id: str) -> bool:
     res = coll.delete_one({"_id": config_id})
     return res.deleted_count > 0
 
+
+def set_enabled(config_id: str, enabled: bool) -> bool:
+    coll = _get_collection()
+    res = coll.update_one({"_id": config_id}, {"$set": {"enabled": bool(enabled)}})
+    return res.matched_count > 0
+
+
+def toggle_enabled(config_id: str) -> Optional[bool]:
+    coll = _get_collection()
+    doc = coll.find_one({"_id": config_id}, {"enabled": 1})
+    if not doc:
+        return None
+    new_val = not bool(doc.get("enabled", True))
+    coll.update_one({"_id": config_id}, {"$set": {"enabled": new_val}})
+    return new_val
+
+
+def get_by_id(config_id: str, include_password: bool = True) -> Optional[Dict[str, Any]]:
+    coll = _get_collection()
+    projection = None if include_password else {"password": 0}
+    d = coll.find_one({"_id": config_id}, projection)
+    if not d:
+        return None
+    return {
+        "id": str(d.get("_id")),
+        "name": d.get("name"),
+        "host": d.get("host"),
+        "port": int(d.get("port", 993)),
+        "username": d.get("username"),
+        "password": d.get("password") if include_password else None,
+        "use_ssl": bool(d.get("use_ssl", True)),
+        "search_criteria": d.get("search_criteria") or "UNSEEN",
+        "search_terms": d.get("search_terms") or [],
+        "provider": d.get("provider") or "other",
+        "enabled": bool(d.get("enabled", True)),
+    }
+
+
+def get_by_username(username: str, include_password: bool = True) -> Optional[Dict[str, Any]]:
+    coll = _get_collection()
+    projection = None if include_password else {"password": 0}
+    d = coll.find_one({"username": username}, projection)
+    if not d:
+        return None
+    return {
+        "id": str(d.get("_id")),
+        "name": d.get("name"),
+        "host": d.get("host"),
+        "port": int(d.get("port", 993)),
+        "username": d.get("username"),
+        "password": d.get("password") if include_password else None,
+        "use_ssl": bool(d.get("use_ssl", True)),
+        "search_criteria": d.get("search_criteria") or "UNSEEN",
+        "search_terms": d.get("search_terms") or [],
+        "provider": d.get("provider") or "other",
+        "enabled": bool(d.get("enabled", True)),
+    }
