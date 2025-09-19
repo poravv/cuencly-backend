@@ -148,11 +148,10 @@ class AdvancedHealthChecker:
         try:
             # Verificar espacio en directorio de datos
             data_path = getattr(settings, "TEMP_PDF_DIR", "./data/temp_pdfs")
-            excel_path = os.path.dirname(settings.EXCEL_OUTPUT_PATH)
             
             disk_info = {}
             
-            for name, path in [("temp_pdfs", data_path), ("excel_output", excel_path)]:
+            for name, path in [("temp_pdfs", data_path)]:
                 try:
                     if os.path.exists(path):
                         statvfs = os.statvfs(path)

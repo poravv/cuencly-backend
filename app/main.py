@@ -12,8 +12,7 @@ from app.config.export_config import get_mongodb_config
 from app.models.models import InvoiceData, ProcessResult, EmailConfig, JobStatus
 from app.modules.email_processor.email_processor import MultiEmailProcessor, EmailProcessor
 from app.modules.openai_processor.openai_processor import OpenAIProcessor
-from app.modules.excel_exporter.excel_exporter import ExcelExporter
-from app.modules.excel_exporter import MongoDBExporter
+from app.modules.mongo_exporter import MongoDBExporter
 from app.modules.scheduler.processing_lock import PROCESSING_LOCK
 
 # Configurar logging
@@ -33,7 +32,7 @@ class InvoiceSync:
         """Inicializa el sistema de sincronización de facturas usando OpenAI."""
         # Crear directorios necesarios
         os.makedirs(settings.TEMP_PDF_DIR, exist_ok=True)
-        os.makedirs(settings.EXCEL_OUTPUT_DIR, exist_ok=True)
+        # Directorio de Excel eliminado del flujo
         
         # Inicializar componentes
         # Usar MultiEmailProcessor si hay múltiples configuraciones de correo (desde MongoDB)
@@ -57,7 +56,6 @@ class InvoiceSync:
             logger.info("No hay cuentas configuradas aún. MultiEmailProcessor inicializado sin cuentas")
         
         self.openai_processor = OpenAIProcessor()
-        self.excel_exporter = ExcelExporter()
         
         # Inicializar MongoDB como almacenamiento primario
         mongodb_config = get_mongodb_config()
@@ -126,8 +124,7 @@ class InvoiceSync:
                 success=False,
                 message="Timeout global: El procesamiento fue abortado por seguridad (>10 min)",
                 invoice_count=0,
-                invoices=[],
-                excel_files=[]
+                invoices=[]
             )
         else:
             # Obtener resultado del thread
@@ -166,16 +163,14 @@ class InvoiceSync:
                         success=False,
                         message=f"Error en procesamiento: {result_data}",
                         invoice_count=0,
-                        invoices=[],
-                        excel_files=[]
+                        invoices=[]
                     )
             except queue.Empty:
                 result = ProcessResult(
                     success=False,
                     message="Error: No se pudo obtener resultado del procesamiento",
                     invoice_count=0,
-                    invoices=[],
-                    excel_files=[]
+                    invoices=[]
                 )
         
         # Actualizar estado del job
@@ -281,13 +276,18 @@ class InvoiceSync:
         Returns:
             str: Tiempo de la próxima ejecución en formato ISO.
         """
-        # Esta es una estimación simple. El schedule.py podría tener un tiempo ligeramente diferente
+        # Estimación simple basada en el intervalo actualmente reportado por el job
         now = datetime.now()
         next_run = now.replace(second=0, microsecond=0)
         
-        # Añadir los minutos del intervalo
+        # Añadir los minutos del intervalo (preferir el estado interno si existe)
         from datetime import timedelta
-        next_run += timedelta(minutes=settings.JOB_INTERVAL_MINUTES)
+        interval = getattr(self._job_status, 'interval_minutes', None) or settings.JOB_INTERVAL_MINUTES
+        try:
+            interval = max(1, int(interval))
+        except Exception:
+            interval = settings.JOB_INTERVAL_MINUTES
+        next_run += timedelta(minutes=interval)
         
         return next_run.isoformat()
 

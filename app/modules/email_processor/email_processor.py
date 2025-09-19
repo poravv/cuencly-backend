@@ -13,9 +13,9 @@ from datetime import datetime
 from app.config.settings import settings
 from app.models.models import EmailConfig, MultiEmailConfig, InvoiceData, ProcessResult
 from app.modules.openai_processor.openai_processor import OpenAIProcessor
+from app.modules.mongo_exporter import MongoDBExporter
 
 
-from app.modules.excel_exporter.excel_exporter import ExcelExporter
 from app.modules.email_processor.errors import OpenAIFatalError, OpenAIRetryableError
 
 from .imap_client import IMAPClient, decode_mime_header
@@ -54,7 +54,6 @@ class MultiEmailProcessor:
             self.email_configs = email_configs
 
         self.openai_processor = OpenAIProcessor()
-        self.excel_exporter = ExcelExporter()
 
         ensure_dirs()
 
@@ -87,7 +86,7 @@ class MultiEmailProcessor:
         all_invoices: List[InvoiceData] = []
         success_count = 0
         errors: List[str] = []
-        excel_files: List[str] = []
+        
 
         logger.info(f"Iniciando procesamiento de {len(self.email_configs)} cuentas de correo")
 
@@ -96,8 +95,7 @@ class MultiEmailProcessor:
                 success=False,
                 message="No hay cuentas de correo configuradas. Agregue al menos una desde la UI.",
                 invoice_count=0,
-                invoices=[],
-                excel_files=[]
+                invoices=[]
             )
 
         for idx, cfg in enumerate(self.email_configs):
@@ -175,9 +173,28 @@ class MultiEmailProcessor:
         if all_invoices:
             unique = self._remove_duplicate_invoices(all_invoices)
             logger.info(f"Facturas únicas después de eliminar duplicados: {len(unique)} (originales: {len(all_invoices)})")
-            excel_path = self.excel_exporter.export_invoices(unique)
-            if excel_path:
-                excel_files.append(excel_path)
+
+            # Exportar a MongoDB directamente en modo scheduler/runner
+            try:
+                exporter = MongoDBExporter()
+                mongo_result = exporter.export_invoices(unique)
+                inserted = int(mongo_result.get('inserted', 0))
+                updated = int(mongo_result.get('updated', 0))
+                logger.info(f"💾 MongoDB export: {inserted} insertados, {updated} actualizados")
+                # Enriquecer mensaje final
+                if inserted or updated:
+                    message_suffix = f" | MongoDB: {inserted} insertados, {updated} actualizados"
+                    # message variable defined later; we'll append after computing base message
+                else:
+                    message_suffix = ""
+            except Exception as e:
+                logger.error(f"❌ Error exportando a MongoDB (scheduler): {e}")
+                message_suffix = f" | ⚠️ Error MongoDB: {str(e)}"
+            finally:
+                try:
+                    exporter.close_connections()
+                except Exception:
+                    pass
             all_invoices = unique
 
         if success_count == len(self.email_configs):
@@ -187,15 +204,20 @@ class MultiEmailProcessor:
         else:
             message = f"Fallo en todas las cuentas. Errores: {'; '.join(errors)}"
 
-        if excel_files:
-            message += f" Archivos Excel generados: {len(excel_files)}"
+        # Adjuntar información de export a MongoDB si está disponible
+        try:
+            if 'message_suffix' in locals() and message_suffix:
+                message += message_suffix
+        except Exception:
+            pass
+
+        # Excel deshabilitado
 
         return ProcessResult(
             success=success_count > 0,
             message=message,
             invoice_count=len(all_invoices),
-            invoices=all_invoices,
-            excel_files=excel_files
+            invoices=all_invoices
         )
 
     # ----------------------------
@@ -308,7 +330,7 @@ class MultiEmailProcessor:
 class EmailProcessor:
     """
     Procesador para una sola cuenta.
-    Separa responsabilidades: IMAP, parseo, guardado adjuntos, links, descarga y envío a OpenAI/Excel.
+    Separa responsabilidades: IMAP, parseo, guardado adjuntos, links y envío a OpenAI.
     """
     def __init__(self, config: EmailConfig = None):
         if config is None:
@@ -343,7 +365,6 @@ class EmailProcessor:
             username=self.config.username, password=self.config.password, mailbox="INBOX"
         )
         self.openai_processor = OpenAIProcessor()
-        self.excel_exporter = ExcelExporter()
 
         ensure_dirs()
         logger.info(f"✅ EmailProcessor inicializado con pool de conexiones para {self.config.username}")
@@ -393,7 +414,8 @@ class EmailProcessor:
             return []
 
         # Pasamos la lista de términos directamente al nuevo IMAPClient.search()
-        uids = self.client.search(terms)
+        unread_only = (str(self.config.search_criteria or 'UNSEEN').upper() != 'ALL')
+        uids = self.client.search(terms, unread_only=unread_only)
 
         logger.info(f"Se encontraron {len(uids)} correos combinando términos: {terms}")
         return uids
@@ -453,7 +475,7 @@ class EmailProcessor:
 
     # --------- Core processing ---------
     def process_emails(self) -> ProcessResult:
-        result = ProcessResult(success=True, message="Procesamiento completado", invoice_count=0, invoices=[], excel_files=[])
+        result = ProcessResult(success=True, message="Procesamiento completado", invoice_count=0, invoices=[])
         try:
             if not self.connect():
                 return ProcessResult(success=False, message="Error al conectar al servidor de correo")
@@ -575,17 +597,26 @@ class EmailProcessor:
                     success=False,
                     message="Procesamiento abortado por error fatal de OpenAI (API key/cuota).",
                     invoice_count=len(result.invoices),
-                    invoices=result.invoices,
-                    excel_files=[]
+                    invoices=result.invoices
             )
 
+            # Persistir en MongoDB (automatizado y manual comparten esta ruta)
             if result.invoices:
-                excel_path = self.excel_exporter.export_invoices(result.invoices)
-                if excel_path:
-                    result.excel_files = [excel_path]
-                    result.message = f"Se procesaron {result.invoice_count} facturas. Archivo Excel: {excel_path}"
-                else:
-                    result.message = f"Se procesaron {result.invoice_count} facturas, pero hubo un error al exportar a Excel"
+                try:
+                    exporter = MongoDBExporter()
+                    mongo_result = exporter.export_invoices(result.invoices)
+                    ins = int(mongo_result.get('inserted', 0))
+                    upd = int(mongo_result.get('updated', 0))
+                    logger.info(f"💾 MongoDB export (single): {ins} insertados, {upd} actualizados")
+                    result.message = f"Se procesaron {result.invoice_count} facturas. MongoDB: {ins} insertados, {upd} actualizados"
+                except Exception as e:
+                    logger.error(f"❌ Error exportando a MongoDB (single): {e}")
+                    result.message = f"Se procesaron {result.invoice_count} facturas, pero falló la persistencia en MongoDB"
+                finally:
+                    try:
+                        exporter.close_connections()
+                    except Exception:
+                        pass
 
             self.disconnect()
             return result

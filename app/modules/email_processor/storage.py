@@ -11,9 +11,28 @@ from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+_FALLBACK_DIR = "/tmp/invoicesync/temp_pdfs"
+
+def _ensure_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        # Verificar escritura
+        test_path = os.path.join(path, ".write_test")
+        with open(test_path, "w") as f:
+            f.write("ok")
+        os.remove(test_path)
+        return True
+    except Exception as e:
+        logger.error(f"❌ No se pudo crear/escribir en {path}: {e}")
+        return False
+
 def ensure_dirs():
-    os.makedirs(settings.TEMP_PDF_DIR, exist_ok=True)
-    os.makedirs(settings.EXCEL_OUTPUT_DIR, exist_ok=True)
+    """Garantiza que exista un directorio usable para temporales.
+    Intenta settings.TEMP_PDF_DIR y cae a /tmp si falla.
+    """
+    if not _ensure_dir(settings.TEMP_PDF_DIR):
+        logger.warning(f"⚠️ Usando directorio fallback para temporales: {_FALLBACK_DIR}")
+        _ensure_dir(_FALLBACK_DIR)
 
 def sanitize_filename(filename: str, force_pdf: bool = False) -> str:
     """Limpia el nombre y fuerza .pdf si se requiere."""
@@ -34,13 +53,21 @@ def unique_name(clean_name: str) -> str:
     name, ext = os.path.splitext(clean_name)
     return f"{ts}_{uid}_{name}{ext}"
 
+def _resolve_base_dir() -> str:
+    # Intentar usar el configurado; si no se puede escribir, usar fallback
+    if _ensure_dir(settings.TEMP_PDF_DIR):
+        return settings.TEMP_PDF_DIR
+    _ensure_dir(_FALLBACK_DIR)
+    return _FALLBACK_DIR
+
 def save_binary(content: bytes, filename: str, force_pdf: bool = False) -> str:
     """Guarda bytes en /temp_pdfs con nombre único."""
     try:
         ensure_dirs()
         clean = sanitize_filename(filename, force_pdf=force_pdf)
         candidate = unique_name(clean)
-        path = os.path.join(settings.TEMP_PDF_DIR, candidate)
+        base_dir = _resolve_base_dir()
+        path = os.path.join(base_dir, candidate)
         with open(path, "wb") as f:
             f.write(content)
         logger.info(f"🗂 Archivo guardado: {path}")

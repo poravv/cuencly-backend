@@ -266,7 +266,7 @@ class ProcessResult(BaseModel):
     message: str
     invoice_count: int = 0
     invoices: List[InvoiceData] = Field(default_factory=list)  # <- evita lista mutable global
-    excel_files: List[str] = Field(default_factory=list)       # <- idem
+    # Campo de Excel removido
 
 class JobStatus(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -276,17 +276,4 @@ class JobStatus(BaseModel):
     last_run: Optional[str] = None
     last_result: Optional[ProcessResult] = None
 
-class ExcelFileInfo(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-    filename: str
-    year_month: str
-    display_name: str
-    path: str
-    size: int
-    last_modified: datetime
-    invoice_count: int
-
-class ExcelFileList(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-    files: List[ExcelFileInfo]
-    total_count: int
+# Modelos de Excel removidos

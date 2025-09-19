@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 from app.config.settings import settings
 
 _LOCK = threading.Lock()
-_PREFS_PATH = os.path.join(settings.EXCEL_OUTPUT_DIR if settings.EXCEL_OUTPUT_DIR else "/app/data", "prefs.json")
+_PREFS_PATH = os.path.join(os.path.dirname(getattr(settings, "TEMP_PDF_DIR", "/app/data/temp_pdfs")) or "/app/data", "prefs.json")
 
 
 def _ensure_dir():
@@ -59,4 +59,3 @@ def set_auto_refresh(uid: str, enabled: bool, interval_ms: int) -> Dict[str, Any
         data["auto_refresh"] = auto
         _write_all(data)
     return auto[uid]
-

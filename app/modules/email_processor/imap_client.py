@@ -4,9 +4,10 @@ import logging
 import socket
 import time
 from typing import List, Optional, Set
+import unicodedata
 from email.header import decode_header
 from email.message import Message
-import os
+import os  # legacy references removed; kept for compatibility if needed
 
 logger = logging.getLogger(__name__)
 
@@ -124,18 +125,36 @@ class IMAPClient:
         finally:
             self.conn = None
 
-    def search(self, subject_terms: List[str]) -> List[str]:
+    def search(self, subject_terms: List[str], unread_only: Optional[bool] = None) -> List[str]:
         """
         Devuelve UIDs de correos que coincidan con cualquiera de los términos de asunto.
-        Respeta EMAIL_SEARCH_CRITERIA: 'ALL' = todos, cualquier otro valor = solo no leídos.
+        El parámetro unread_only controla si buscar solo no leídos (True) o todos (False).
         Funciona igual para Gmail y servidores IMAP comunes. Sin X-GM-RAW.
         """
         if not self.conn and not self.connect():
             return []
 
-        unread_only = (os.getenv("EMAIL_SEARCH_CRITERIA", "UNSEEN").upper() != "ALL")
+        if unread_only is None:
+            unread_only = True
         flag_args = ['UNSEEN'] if unread_only else ['ALL']
-        terms = [t.strip() for t in (subject_terms or []) if t and t.strip()]
+        def _to_ascii(s: str) -> str:
+            try:
+                # Normaliza y remueve diacríticos → ASCII
+                nfkd = unicodedata.normalize('NFKD', s)
+                return ''.join(c for c in nfkd if ord(c) < 128)
+            except Exception:
+                try:
+                    return s.encode('ascii', 'ignore').decode('ascii', 'ignore')
+                except Exception:
+                    return ''
+
+        terms = []
+        for t in (subject_terms or []):
+            if not t:
+                continue
+            ascii_t = _to_ascii(str(t).strip())
+            if ascii_t:
+                terms.append(ascii_t)
 
         def _decode_ids(data) -> List[str]:
             if not data:

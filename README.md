@@ -1,6 +1,6 @@
 # InvoiceSync - Backend
 
-InvoiceSync es un sistema automatizado para la extracción de datos de facturas electrónicas paraguayas. El sistema monitorea una casilla de correo electrónico para detectar facturas en formato PDF, extrae la información utilizando OpenAI Vision API, y exporta los datos a un archivo Excel para su posterior procesamiento o integración con sistemas contables.
+InvoiceSync es un sistema automatizado para la extracción de datos de facturas electrónicas paraguayas. El sistema monitorea una casilla de correo electrónico para detectar facturas en formato PDF/XML, extrae la información utilizando OpenAI (y parser nativo para XML SIFEN), y almacena los datos estructurados en MongoDB.
 
 ## Características
 
@@ -12,9 +12,7 @@ InvoiceSync es un sistema automatizado para la extracción de datos de facturas 
   - Detalles de timbrado
   - Productos/servicios facturados
   - Totales e impuestos
-- **Exportación a Excel:** Genera archivos Excel con los datos extraídos en múltiples hojas:
-  - Hoja principal con resumen de facturas
-  - Hoja de productos con detalle de items
+- **Almacenamiento en MongoDB:** Guarda los documentos normalizados para consultas y análisis.
 - **API RESTful:** Permite integrar con otros sistemas y ejecutar el procesamiento bajo demanda.
 - **Procesamiento periódico:** Programación de tareas automáticas para revisar correos en intervalos configurables.
 - **🛡️ Protección anti-cuelgues:** Sistema robusto con timeouts y retry automático para evitar bloqueos del servidor.
@@ -45,7 +43,7 @@ InvoiceSync es un sistema automatizado para la extracción de datos de facturas 
 - **FastAPI:** Framework web para la API.
 - **OpenAI API:** Para el procesamiento de imágenes y extracción de datos.
 - **PyMuPDF:** Convertir PDFs a imágenes para mejor procesamiento.
-- **Pandas/Openpyxl:** Generación de reportes Excel.
+- **MongoDB (pymongo/motor):** Almacenamiento documental.
 - **imaplib2:** Conexión a servidores de correo electrónico.
 
 ## Requisitos
@@ -87,23 +85,21 @@ InvoiceSync es un sistema automatizado para la extracción de datos de facturas 
 
 ## Configuración
 
-Edita el archivo `.env` para configurar:
+Variables de entorno principales (ver `.env`):
 
 | Variable | Descripción |
 |----------|-------------|
-| EMAIL_HOST | Servidor IMAP de correo electrónico |
-| EMAIL_PORT | Puerto del servidor IMAP (típicamente 993 para SSL) |
-| EMAIL_USE_SSL | Usar SSL para la conexión (True/False) |
-| EMAIL_USERNAME | Nombre de usuario para la cuenta de correo |
-| EMAIL_PASSWORD | Contraseña para la cuenta de correo |
-| EXCEL_OUTPUT_PATH | Ruta donde se guardará el archivo Excel |
+| MONGODB_URL | Cadena de conexión a MongoDB |
+| MONGODB_DATABASE | Base de datos en MongoDB |
+| MONGODB_COLLECTION | Colección para almacenar facturas |
+| OPENAI_API_KEY | Clave API para OpenAI |
 | TEMP_PDF_DIR | Directorio temporal para almacenar PDFs |
 | LOG_LEVEL | Nivel de log (INFO, DEBUG, ERROR, etc.) |
-| OPENAI_API_KEY | Clave API para OpenAI |
-| JOB_INTERVAL_MINUTES | Intervalo para revisar correos (en minutos) |
-| EMAIL_SEARCH_TERMS | Términos para buscar en asuntos de correos |
-| API_HOST | Host para el servidor API |
-| API_PORT | Puerto para el servidor API |
+| JOB_INTERVAL_MINUTES | Intervalo para el job automático (minutos) |
+| API_HOST | Host del servidor API |
+| API_PORT | Puerto del servidor API |
+
+Nota: La configuración de cuentas de correo (host, puerto, usuario, contraseña, search_terms) se gestiona desde el frontend y se guarda en MongoDB (colección `email_configs`).
 
 ## Uso
 
@@ -146,9 +142,7 @@ python start.py --mode=api
    - Envía la imagen a OpenAI Vision API con un prompt específico
    - Extrae datos estructurados de la respuesta
    - Almacena la información en un modelo de datos
-3. Todos los datos extraídos se exportan a un archivo Excel con múltiples hojas:
-   - La hoja "Facturas" contiene un resumen de todas las facturas
-   - La hoja "Productos" contiene el detalle de todos los productos/servicios
+3. Todos los datos extraídos se guardan en MongoDB y quedan disponibles vía endpoints de consulta.
 
 ## Modelo de datos
 
@@ -207,7 +201,7 @@ backend/
 │   ├── models/           # Modelos de datos
 │   ├── modules/          # Módulos funcionales
 │   │   ├── email_processor/      # Procesamiento de emails
-│   │   ├── excel_exporter/       # Exportación a Excel
+│   │   ├── mongo_exporter.py     # Exportador a MongoDB
 │   │   ├── openai_processor/     # Integración con OpenAI
 │   ├── utils/            # Utilidades
 ├── data/                 # Datos generados
@@ -230,7 +224,7 @@ El sistema puede ser adaptado para diferentes tipos de facturas ajustando los si
 
 2. **Modelo de datos**: Ajusta los modelos en `app/models/models.py` si necesitas campos adicionales o diferentes.
 
-3. **Exportador Excel**: Modifica `app/modules/excel_exporter/excel_exporter.py` para cambiar cómo se exportan los datos.
+3. **Exportador MongoDB**: Ajusta `app/modules/mongo_exporter.py` para cambiar cómo se persiste la información.
 
 ## Contribuir
 
@@ -246,9 +240,9 @@ El sistema puede ser adaptado para diferentes tipos de facturas ajustando los si
 - Verifica que tu API key de OpenAI sea válida y tenga acceso a GPT-4o o GPT-4-Vision
 - Comprueba que los PDFs sean legibles y no estén protegidos
 
-### Problemas de exportación a Excel
-- Asegúrate de que la ruta del archivo Excel sea accesible y escribible
-- Verifica que no esté abierto en otra aplicación cuando se intenta escribir
+### Problemas de persistencia en MongoDB
+- Verifica la cadena de conexión (MONGODB_URL) y credenciales
+- Confirma que el contenedor/servicio de MongoDB está saludable
 
 ## Licencia
 
