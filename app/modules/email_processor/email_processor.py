@@ -639,6 +639,7 @@ class EmailProcessor:
         interval = settings.JOB_INTERVAL_MINUTES
         logger.info(f"Iniciando job programado para ejecutarse cada {interval} minutos")
         schedule.every(interval).minutes.do(self._run_job)
+        self._interval_minutes = interval
         self._job_running = True
         self._job_thread = threading.Thread(target=self._schedule_loop, daemon=True)
         self._job_thread.start()
@@ -695,14 +696,20 @@ class EmailProcessor:
             next_run_iso = None
             if getattr(self, "_job_running", False) and getattr(schedule, "next_run", None):
                 try:
-                    next_run_iso = schedule.next_run.isoformat()
+                    # schedule.next_run es una función en esta versión;
+                    nr = schedule.next_run() if callable(getattr(schedule, 'next_run', None)) else getattr(schedule, 'next_run', None)
+                    if nr is not None:
+                        next_run_iso = getattr(nr, 'isoformat', lambda: str(nr))()
                 except Exception:
-                    next_run_iso = str(schedule.next_run)
+                    try:
+                        next_run_iso = str(schedule.next_run())
+                    except Exception:
+                        next_run_iso = None
             return {
                 "running": bool(getattr(self, "_job_running", False)),
                 "next_run": next_run_iso,
                 "last_run": self._last_run_iso,
-                "interval_minutes": settings.JOB_INTERVAL_MINUTES,
+                "interval_minutes": getattr(self, "_interval_minutes", settings.JOB_INTERVAL_MINUTES),
                 "last_result": None
             }
         except Exception:
@@ -710,7 +717,7 @@ class EmailProcessor:
                 "running": bool(getattr(self, "_job_running", False)),
                 "next_run": None,
                 "last_run": self._last_run_iso,
-                "interval_minutes": settings.JOB_INTERVAL_MINUTES,
+                "interval_minutes": getattr(self, "_interval_minutes", settings.JOB_INTERVAL_MINUTES),
                 "last_result": None
             }
     

@@ -747,7 +747,13 @@ async def job_status():
 async def set_job_interval(payload: IntervalPayload):
     """Ajusta el intervalo (minutos) del job de automatización."""
     try:
+        logger.info(f"🛠️ Ajustando intervalo de job a {payload.minutes} minutos")
         status = invoice_sync.update_job_interval(payload.minutes)
+        logger.info(
+            "✅ Intervalo actualizado: running=%s, interval=%s, next_run=%s, last_run=%s",
+            getattr(status, 'running', False), getattr(status, 'interval_minutes', None),
+            getattr(status, 'next_run', None), getattr(status, 'last_run', None)
+        )
         return status
     except Exception as e:
         logger.error(f"Error al ajustar intervalo del job: {str(e)}")
