@@ -11,7 +11,7 @@ from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_DIR = "/tmp/invoicesync/temp_pdfs"
+_FALLBACK_DIR = "/tmp/cuenlyapp/temp_pdfs"
 
 def _ensure_dir(path: str) -> bool:
     try:

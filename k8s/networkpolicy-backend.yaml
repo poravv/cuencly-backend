@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-allow-frontend
+  namespace: cuenly-backend
+spec:
+  podSelector:
+    matchLabels:
+      app: cuenly-backend
+      tier: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: cuenly-frontend
+        - namespaceSelector:
+            matchLabels:
+              name: cuenly-backend
+      ports:
+        - protocol: TCP
+          port: 8000
+

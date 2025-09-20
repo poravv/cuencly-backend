@@ -1,5 +1,5 @@
 """
-Middleware de seguridad para InvoiceSync API
+Middleware de seguridad para CuenlyApp API
 """
 
 import time

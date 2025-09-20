@@ -1,4 +1,4 @@
-# Módulo de monitoreo para InvoiceSync
+# Módulo de monitoreo para CuenlyApp
 from .health_checker import AdvancedHealthChecker
 
 def get_health_checker():

@@ -21,13 +21,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("invoicesync.log")
+        logging.FileHandler("cuenlyapp.log")
     ]
 )
 
 logger = logging.getLogger(__name__)
 
-class InvoiceSync:
+class CuenlyApp:
     def __init__(self):
         """Inicializa el sistema de sincronización de facturas usando OpenAI."""
         # Crear directorios necesarios
@@ -78,7 +78,7 @@ class InvoiceSync:
             last_result=None
         )
         
-        logger.info("Sistema InvoiceSync inicializado correctamente")
+        logger.info("Sistema CuenlyApp inicializado correctamente")
     
     def process_emails(self) -> ProcessResult:
         """
@@ -349,7 +349,7 @@ class InvoiceSync:
 
 def main():
     """Función principal para ejecutar desde línea de comandos."""
-    parser = argparse.ArgumentParser(description="InvoiceSync: Sincronización de facturas desde correo")
+    parser = argparse.ArgumentParser(description="CuenlyApp: Sincronización de facturas desde correo")
     parser.add_argument("--process", action="store_true", help="Procesar correos")
     parser.add_argument("--start-job", action="store_true", help="Iniciar job programado")
     parser.add_argument("--stop-job", action="store_true", help="Detener job programado")
@@ -357,16 +357,16 @@ def main():
     
     args = parser.parse_args()
     
-    invoicesync = InvoiceSync()
+    cuenlyapp = CuenlyApp()
     
     if args.process:
-        result = invoicesync.process_emails()
+        result = cuenlyapp.process_emails()
         print(f"Resultado: {result.success}")
         print(f"Mensaje: {result.message}")
         print(f"Facturas procesadas: {result.invoice_count}")
     
     elif args.start_job:
-        status = invoicesync.start_scheduled_job()
+        status = cuenlyapp.start_scheduled_job()
         print(f"Job iniciado: {status.running}")
         print(f"Próxima ejecución: {status.next_run}")
         
@@ -376,14 +376,14 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             print("Deteniendo job...")
-            invoicesync.stop_scheduled_job()
+            cuenlyapp.stop_scheduled_job()
     
     elif args.stop_job:
-        status = invoicesync.stop_scheduled_job()
+        status = cuenlyapp.stop_scheduled_job()
         print(f"Job detenido: {not status.running}")
     
     elif args.status:
-        status = invoicesync.get_job_status()
+        status = cuenlyapp.get_job_status()
         print(f"Job activo: {status.running}")
         print(f"Próxima ejecución: {status.next_run}")
         print(f"Última ejecución: {status.last_run}")

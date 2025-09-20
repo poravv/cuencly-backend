@@ -29,7 +29,7 @@ def _get_client() -> MongoClient:
 
 def _get_collection() -> Collection:
     client = _get_client()
-    db_name = getattr(settings, "MONGODB_DATABASE", "invoicesync_warehouse")
+    db_name = getattr(settings, "MONGODB_DATABASE", "cuenlyapp_warehouse")
     db = client[db_name]
     coll = db[COLLECTION_NAME]
     try:
@@ -41,10 +41,13 @@ def _get_collection() -> Collection:
     return coll
 
 
-def list_configs(include_password: bool = False) -> List[Dict[str, Any]]:
+def list_configs(include_password: bool = False, owner_email: Optional[str] = None) -> List[Dict[str, Any]]:
     """List all email configurations. Password is omitted by default."""
     coll = _get_collection()
-    docs = list(coll.find({}))
+    query: Dict[str, Any] = {}
+    if owner_email:
+        query['owner_email'] = owner_email.lower()
+    docs = list(coll.find(query))
     results: List[Dict[str, Any]] = []
     for d in docs:
         item = {
@@ -65,9 +68,12 @@ def list_configs(include_password: bool = False) -> List[Dict[str, Any]]:
     return results
 
 
-def get_enabled_configs(include_password: bool = True) -> List[Dict[str, Any]]:
+def get_enabled_configs(include_password: bool = True, owner_email: Optional[str] = None) -> List[Dict[str, Any]]:
     coll = _get_collection()
-    docs = list(coll.find({"enabled": True}))
+    q: Dict[str, Any] = {"enabled": True}
+    if owner_email:
+        q['owner_email'] = owner_email.lower()
+    docs = list(coll.find(q))
     configs = []
     for d in docs:
         cfg = {
@@ -88,7 +94,7 @@ def get_enabled_configs(include_password: bool = True) -> List[Dict[str, Any]]:
     return configs
 
 
-def create_config(data: Dict[str, Any]) -> str:
+def create_config(data: Dict[str, Any], owner_email: Optional[str] = None) -> str:
     coll = _get_collection()
     payload = {
         "_id": data.get("id") or uuid.uuid4().hex,
@@ -102,6 +108,7 @@ def create_config(data: Dict[str, Any]) -> str:
         "search_terms": data.get("search_terms") or [],
         "provider": data.get("provider") or "other",
         "enabled": bool(data.get("enabled", True)),
+        "owner_email": (owner_email or data.get("owner_email") or "").lower(),
         "created_at": data.get("created_at"),
         "updated_at": data.get("updated_at"),
     }
@@ -109,7 +116,7 @@ def create_config(data: Dict[str, Any]) -> str:
     return str(payload["_id"]) 
 
 
-def update_config(config_id: str, data: Dict[str, Any]) -> bool:
+def update_config(config_id: str, data: Dict[str, Any], owner_email: Optional[str] = None) -> bool:
     coll = _get_collection()
     updates = {}
     for key in [
@@ -129,36 +136,51 @@ def update_config(config_id: str, data: Dict[str, Any]) -> bool:
             updates[key] = data[key]
     if not updates:
         return False
-    res = coll.update_one({"_id": config_id}, {"$set": updates})
+    q = {"_id": config_id}
+    if owner_email:
+        q['owner_email'] = owner_email.lower()
+    res = coll.update_one(q, {"$set": updates})
     return res.matched_count > 0
 
 
-def delete_config(config_id: str) -> bool:
+def delete_config(config_id: str, owner_email: Optional[str] = None) -> bool:
     coll = _get_collection()
-    res = coll.delete_one({"_id": config_id})
+    q = {"_id": config_id}
+    if owner_email:
+        q['owner_email'] = owner_email.lower()
+    res = coll.delete_one(q)
     return res.deleted_count > 0
 
 
-def set_enabled(config_id: str, enabled: bool) -> bool:
+def set_enabled(config_id: str, enabled: bool, owner_email: Optional[str] = None) -> bool:
     coll = _get_collection()
-    res = coll.update_one({"_id": config_id}, {"$set": {"enabled": bool(enabled)}})
+    q = {"_id": config_id}
+    if owner_email:
+        q['owner_email'] = owner_email.lower()
+    res = coll.update_one(q, {"$set": {"enabled": bool(enabled)}})
     return res.matched_count > 0
 
 
-def toggle_enabled(config_id: str) -> Optional[bool]:
+def toggle_enabled(config_id: str, owner_email: Optional[str] = None) -> Optional[bool]:
     coll = _get_collection()
-    doc = coll.find_one({"_id": config_id}, {"enabled": 1})
+    q = {"_id": config_id}
+    if owner_email:
+        q['owner_email'] = owner_email.lower()
+    doc = coll.find_one(q, {"enabled": 1})
     if not doc:
         return None
     new_val = not bool(doc.get("enabled", True))
-    coll.update_one({"_id": config_id}, {"$set": {"enabled": new_val}})
+    coll.update_one(q, {"$set": {"enabled": new_val}})
     return new_val
 
 
-def get_by_id(config_id: str, include_password: bool = True) -> Optional[Dict[str, Any]]:
+def get_by_id(config_id: str, include_password: bool = True, owner_email: Optional[str] = None) -> Optional[Dict[str, Any]]:
     coll = _get_collection()
     projection = None if include_password else {"password": 0}
-    d = coll.find_one({"_id": config_id}, projection)
+    q = {"_id": config_id}
+    if owner_email:
+        q['owner_email'] = owner_email.lower()
+    d = coll.find_one(q, projection)
     if not d:
         return None
     return {
@@ -176,10 +198,13 @@ def get_by_id(config_id: str, include_password: bool = True) -> Optional[Dict[st
     }
 
 
-def get_by_username(username: str, include_password: bool = True) -> Optional[Dict[str, Any]]:
+def get_by_username(username: str, include_password: bool = True, owner_email: Optional[str] = None) -> Optional[Dict[str, Any]]:
     coll = _get_collection()
     projection = None if include_password else {"password": 0}
-    d = coll.find_one({"username": username}, projection)
+    q = {"username": username}
+    if owner_email:
+        q['owner_email'] = owner_email.lower()
+    d = coll.find_one(q, projection)
     if not d:
         return None
     return {

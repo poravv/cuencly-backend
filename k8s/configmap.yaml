@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: cuenly-backend
+data:
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  LOG_LEVEL: "INFO"
+  TEMP_PDF_DIR: "/app/data/temp_pdfs"
+  JOB_INTERVAL_MINUTES: "60"
+  AUTH_REQUIRE: "true"
+  FIREBASE_PROJECT_ID: "cuenly-app"
+  MULTI_TENANT_ENFORCE: "true"
+

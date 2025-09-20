@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongodb-appuser
+  namespace: cuenly-backend
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-app-user
+          image: mongo:6.0
+          env:
+            - name: ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: cuenly-backend-secrets
+                  key: mongodb-root-username
+            - name: ROOT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: cuenly-backend-secrets
+                  key: mongodb-root-password
+            - name: DB
+              valueFrom:
+                secretKeyRef:
+                  name: cuenly-backend-secrets
+                  key: mongodb-database
+            - name: APP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-app-user
+                  key: username
+            - name: APP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-app-user
+                  key: password
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              HOST=mongodb-0.mongodb.cuenly-backend.svc.cluster.local:27017
+              for i in $(seq 1 60); do
+                if mongo --quiet --host "$HOST" --eval 'db.adminCommand({ ping: 1 }).ok' >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 5
+              done
+              mongo --host "$HOST" -u "$ROOT_USER" -p "$ROOT_PASS" --authenticationDatabase admin --eval "db.getSiblingDB('$DB').getUser('$APP_USER') ? print('User exists') : (db.getSiblingDB('$DB').createUser({user:'$APP_USER',pwd:'$APP_PASS',roles:[{role:'readWrite',db:'$DB'}]}), print('User created'))"
+

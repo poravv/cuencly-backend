@@ -1,5 +1,5 @@
 """
-Validadores y utilidades de seguridad para InvoiceSync
+Validadores y utilidades de seguridad para CuenlyApp
 """
 
 import re

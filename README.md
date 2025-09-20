@@ -1,6 +1,6 @@
-# InvoiceSync - Backend
+# CuenlyApp - Backend
 
-InvoiceSync es un sistema automatizado para la extracción de datos de facturas electrónicas paraguayas. El sistema monitorea una casilla de correo electrónico para detectar facturas en formato PDF/XML, extrae la información utilizando OpenAI (y parser nativo para XML SIFEN), y almacena los datos estructurados en MongoDB.
+CuenlyApp es un sistema automatizado para la extracción de datos de facturas electrónicas paraguayas. El sistema monitorea una casilla de correo electrónico para detectar facturas en formato PDF/XML, extrae la información utilizando OpenAI (y parser nativo para XML SIFEN), y almacena los datos estructurados en MongoDB.
 
 ## Características
 
@@ -56,8 +56,8 @@ InvoiceSync es un sistema automatizado para la extracción de datos de facturas 
 
 1. **Clonar el repositorio:**
    ```bash
-   git clone https://github.com/yourusername/invoicesync.git
-   cd invoicesync/backend
+   git clone https://github.com/yourusername/cuenlyapp.git
+   cd cuenlyapp/backend
    ```
 
 2. **Crear y activar un entorno virtual:**

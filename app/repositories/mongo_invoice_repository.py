@@ -38,6 +38,7 @@ class MongoInvoiceRepository(InvoiceRepository):
             coll.create_index("_id", unique=True)
             coll.create_index([("emisor.ruc", 1), ("fecha_emision", -1)])
             coll.create_index("mes_proceso")
+            coll.create_index("owner_email")
         except Exception:
             pass
         return coll
@@ -46,6 +47,7 @@ class MongoInvoiceRepository(InvoiceRepository):
         coll = self._get_db()[self.items_collection_name]
         try:
             coll.create_index([("header_id", 1), ("linea", 1)], unique=True)
+            coll.create_index("owner_email")
         except Exception:
             pass
         return coll

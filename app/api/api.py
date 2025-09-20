@@ -17,14 +17,17 @@ from fastapi import Response
 from pydantic import BaseModel
 
 from app.config.settings import settings
+from app.utils.firebase_auth import verify_firebase_token, extract_bearer_token
+from app.repositories.user_repository import UserRepository
 from app.models.models import InvoiceData, EmailConfig, ProcessResult, JobStatus, MultiEmailConfig
-from app.main import InvoiceSync
+from app.main import CuenlyApp
 from app.modules.scheduler.processing_lock import PROCESSING_LOCK
 from app.modules.scheduler.task_queue import task_queue
 from app.modules.email_processor.storage import save_binary
 from app.modules.prefs.prefs import get_auto_refresh as prefs_get_auto_refresh, set_auto_refresh as prefs_set_auto_refresh
 from app.modules.mongo_exporter import MongoDBExporter
 from app.repositories.mongo_invoice_repository import MongoInvoiceRepository
+from app.modules.mapping.invoice_mapping import map_invoice
 from app.modules.mongo_query_service import get_mongo_query_service
 from app.repositories.mongo_invoice_repository import MongoInvoiceRepository
 from app.modules.email_processor.config_store import (
@@ -44,7 +47,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("invoicesync_api.log")
+        logging.FileHandler("cuenlyapp_api.log")
     ]
 )
 
@@ -52,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 # Crear la aplicación FastAPI
 app = FastAPI(
-    title="InvoiceSync API",
+    title="CuenlyApp API",
     description="API para procesar facturas desde correo electrónico y almacenarlas en MongoDB",
     version="2.0.0"
 )
@@ -67,7 +70,7 @@ app.add_middleware(
 )
 
 # Instancia global del procesador
-invoice_sync = InvoiceSync()
+invoice_sync = CuenlyApp()
 
 # Payloads
 class IntervalPayload(BaseModel):
@@ -87,6 +90,25 @@ class AutoRefreshPref(BaseModel):
 class ToggleEnabledPayload(BaseModel):
     enabled: bool
 
+def _get_current_user(request: Request) -> Dict[str, Any]:
+    """Valida token Firebase y retorna claims. Upserta usuario en DB."""
+    token = extract_bearer_token(request)
+    if not token:
+        if settings.AUTH_REQUIRE:
+            raise HTTPException(status_code=401, detail="Authorization requerido")
+        return {}
+    claims = verify_firebase_token(token)
+    try:
+        UserRepository().upsert_user({
+            'email': claims.get('email'),
+            'uid': claims.get('user_id'),
+            'name': claims.get('name'),
+            'picture': claims.get('picture'),
+        })
+    except Exception:
+        pass
+    return claims
+
 # Tarea en segundo plano para procesar correos
 def process_emails_task():
     """Tarea en segundo plano para procesar correos."""
@@ -99,10 +121,10 @@ def process_emails_task():
 @app.get("/")
 async def root():
     """Endpoint raíz para verificar que la API está funcionando."""
-    return {"message": "InvoiceSync API está en funcionamiento"}
+    return {"message": "CuenlyApp API está en funcionamiento"}
 
 @app.post("/process", response_model=ProcessResult)
-async def process_emails(background_tasks: BackgroundTasks, run_async: bool = False):
+async def process_emails(background_tasks: BackgroundTasks, run_async: bool = False, request: Request = None, user: Dict[str, Any] = Depends(_get_current_user)):
     """
     Procesa correos electrónicos para extraer facturas.
     
@@ -123,7 +145,15 @@ async def process_emails(background_tasks: BackgroundTasks, run_async: bool = Fa
             )
         else:
             # Ejecutar de forma síncrona
-            result = invoice_sync.process_emails()
+            # Procesar solo cuentas del usuario (multiusuario)
+            from app.modules.email_processor.config_store import get_enabled_configs
+            from app.modules.email_processor.email_processor import MultiEmailProcessor
+            owner_email = (user.get('email') or '').lower()
+            configs = get_enabled_configs(include_password=True, owner_email=owner_email) if owner_email else []
+            if not configs:
+                return ProcessResult(success=False, message="Sin cuentas de correo habilitadas para este usuario", invoice_count=0)
+            mp = MultiEmailProcessor(email_configs=[MultiEmailConfig(**c) for c in configs], owner_email=owner_email)
+            result = mp.process_all_emails()
             return result
     except Exception as e:
         logger.error(f"Error al procesar correos: {str(e)}")
@@ -133,11 +163,18 @@ async def process_emails(background_tasks: BackgroundTasks, run_async: bool = Fa
         )
 
 @app.post("/process-direct")
-async def process_emails_direct():
+async def process_emails_direct(user: Dict[str, Any] = Depends(_get_current_user)):
     """Procesa correos directamente sin cola de tareas (modo simple)."""
     try:
         # Ejecutar procesamiento directamente
-        result = invoice_sync.process_emails()
+        from app.modules.email_processor.config_store import get_enabled_configs
+        from app.modules.email_processor.email_processor import MultiEmailProcessor
+        owner_email = (user.get('email') or '').lower()
+        configs = get_enabled_configs(include_password=True, owner_email=owner_email) if owner_email else []
+        if not configs:
+            return {"success": False, "message": "Sin cuentas de correo habilitadas para este usuario", "invoice_count": 0}
+        mp = MultiEmailProcessor(email_configs=[MultiEmailConfig(**c) for c in configs], owner_email=owner_email)
+        result = mp.process_all_emails()
         
         if result and hasattr(result, 'success') and result.success:
             return {
@@ -156,7 +193,7 @@ async def process_emails_direct():
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @app.post("/tasks/process")
-async def enqueue_process_emails():
+async def enqueue_process_emails(user: Dict[str, Any] = Depends(_get_current_user)):
     """Encola una ejecución de procesamiento de correos y retorna un job_id."""
     
     # Verificar si el job automático está ejecutándose
@@ -183,7 +220,12 @@ async def enqueue_process_emails():
         return {"job_id": job_id}
     
     def _runner():
-        return invoice_sync.process_emails()
+        from app.modules.email_processor.config_store import get_enabled_configs
+        from app.modules.email_processor.email_processor import MultiEmailProcessor
+        owner_email = (user.get('email') or '').lower()
+        configs = get_enabled_configs(include_password=True, owner_email=owner_email) if owner_email else []
+        mp = MultiEmailProcessor(email_configs=[MultiEmailConfig(**c) for c in configs], owner_email=owner_email)
+        return mp.process_all_emails()
 
     job_id = task_queue.enqueue("process_emails", _runner)
     return {"job_id": job_id}
@@ -229,7 +271,7 @@ async def cleanup_old_tasks():
     return {"message": f"Se limpiaron {cleanup_count} tareas", "cleaned_count": cleanup_count}
 
 @app.get("/tasks/debug")
-async def debug_tasks():
+async def debug_tasks(user: Dict[str, Any] = Depends(_get_current_user)):
     """Debug endpoint para ver el estado de todas las tareas."""
     current_time = time.time()
     task_info = []
@@ -253,7 +295,7 @@ async def upload_pdf(
     file: UploadFile = File(...),
     sender: Optional[str] = Form(None),
     date: Optional[str] = Form(None)
-):
+    , user: Dict[str, Any] = Depends(_get_current_user)):
     """
     Sube un archivo PDF para procesarlo directamente.
     
@@ -286,15 +328,25 @@ async def upload_pdf(
             except Exception:
                 logger.warning(f"Formato de fecha incorrecto: {date}")
 
-        # Serializar extracción + exportación a MongoDB para no interferir con automatización
+        # Extraer + guardar en esquema v2 (invoice_headers/items)
         with PROCESSING_LOCK:
             invoice_data = invoice_sync.openai_processor.extract_invoice_data(pdf_path, email_meta)
             invoices = [invoice_data] if invoice_data else []
-            if invoices and getattr(invoice_sync, 'mongodb_exporter', None):
+            if invoices:
                 try:
-                    result = invoice_sync.mongodb_exporter.export_invoices(invoices)
-                finally:
-                    invoice_sync.mongodb_exporter.close_connections()
+                    repo = MongoInvoiceRepository()
+                    owner = (user.get('email') or '').lower()
+                    doc = map_invoice(invoice_data, fuente="OPENAI_VISION")
+                    if owner:
+                        try:
+                            doc.header.owner_email = owner
+                            for it in doc.items:
+                                it.owner_email = owner
+                        except Exception:
+                            pass
+                    repo.save_document(doc)
+                except Exception as e:
+                    logger.error(f"❌ Error persistiendo v2 (upload PDF): {e}")
 
         if not invoices:
             return ProcessResult(
@@ -306,7 +358,7 @@ async def upload_pdf(
 
         return ProcessResult(
             success=True,
-            message=f"Factura procesada y almacenada en MongoDB",
+            message=f"Factura procesada y almacenada (v2)",
             invoice_count=1,
             invoices=invoices
         )
@@ -323,7 +375,7 @@ async def upload_xml(
     file: UploadFile = File(...),
     sender: Optional[str] = Form(None),
     date: Optional[str] = Form(None)
-):
+    , user: Dict[str, Any] = Depends(_get_current_user)):
     """
     Sube un archivo XML SIFEN para procesarlo directamente con el parser nativo (fallback OpenAI).
     """
@@ -347,14 +399,24 @@ async def upload_xml(
                 logger.warning(f"Formato de fecha incorrecto: {date}")
 
         with PROCESSING_LOCK:
-            # Procesar XML y almacenar en MongoDB
+            # Procesar XML y almacenar en esquema v2
             invoice_data = invoice_sync.openai_processor.extract_invoice_data_from_xml(xml_path, email_meta)
             invoices = [invoice_data] if invoice_data else []
-            if invoices and getattr(invoice_sync, 'mongodb_exporter', None):
+            if invoices:
                 try:
-                    result = invoice_sync.mongodb_exporter.export_invoices(invoices)
-                finally:
-                    invoice_sync.mongodb_exporter.close_connections()
+                    repo = MongoInvoiceRepository()
+                    owner = (user.get('email') or '').lower()
+                    doc = map_invoice(invoice_data, fuente="XML_NATIVO" if getattr(invoice_data, 'cdc', '') else "OPENAI_VISION")
+                    if owner:
+                        try:
+                            doc.header.owner_email = owner
+                            for it in doc.items:
+                                it.owner_email = owner
+                        except Exception:
+                            pass
+                    repo.save_document(doc)
+                except Exception as e:
+                    logger.error(f"❌ Error persistiendo v2 (upload XML): {e}")
 
         if not invoices:
             return ProcessResult(
@@ -366,7 +428,7 @@ async def upload_xml(
 
         return ProcessResult(
             success=True,
-            message=f"Factura XML procesada y almacenada en MongoDB",
+            message=f"Factura XML procesada y almacenada (v2)",
             invoice_count=1,
             invoices=invoices
         )
@@ -383,7 +445,7 @@ async def enqueue_upload_pdf(
     file: UploadFile = File(...),
     sender: Optional[str] = Form(None),
     date: Optional[str] = Form(None)
-):
+    , user: Dict[str, Any] = Depends(_get_current_user)):
     """Encola el procesamiento de un PDF manual y retorna job_id."""
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Solo se aceptan archivos PDF")
@@ -401,14 +463,24 @@ async def enqueue_upload_pdf(
         def _runner():
             inv = invoice_sync.openai_processor.extract_invoice_data(pdf_path, email_meta)
             invoices = [inv] if inv else []
-            if invoices and getattr(invoice_sync, 'mongodb_exporter', None):
+            if invoices:
                 try:
-                    invoice_sync.mongodb_exporter.export_invoices(invoices)
-                finally:
-                    invoice_sync.mongodb_exporter.close_connections()
+                    repo = MongoInvoiceRepository()
+                    owner = (user.get('email') or '').lower()
+                    doc = map_invoice(inv, fuente="OPENAI_VISION")
+                    if owner:
+                        try:
+                            doc.header.owner_email = owner
+                            for it in doc.items:
+                                it.owner_email = owner
+                        except Exception:
+                            pass
+                    repo.save_document(doc)
+                except Exception as e:
+                    logger.error(f"❌ Error persistiendo v2 (tasks upload PDF): {e}")
             return ProcessResult(
                 success=bool(invoices),
-                message=("Factura procesada y almacenada en MongoDB" if invoices else "No se pudo extraer factura"),
+                message=("Factura procesada y almacenada (v2)" if invoices else "No se pudo extraer factura"),
                 invoice_count=len(invoices),
                 invoices=invoices
             )
@@ -424,7 +496,7 @@ async def enqueue_upload_xml(
     file: UploadFile = File(...),
     sender: Optional[str] = Form(None),
     date: Optional[str] = Form(None)
-):
+    , user: Dict[str, Any] = Depends(_get_current_user)):
     """Encola el procesamiento de un XML manual y retorna job_id."""
     if not file.filename.lower().endswith('.xml'):
         raise HTTPException(status_code=400, detail="Solo se aceptan archivos XML")
@@ -442,14 +514,24 @@ async def enqueue_upload_xml(
         def _runner():
             inv = invoice_sync.openai_processor.extract_invoice_data_from_xml(xml_path, email_meta)
             invoices = [inv] if inv else []
-            if invoices and getattr(invoice_sync, 'mongodb_exporter', None):
+            if invoices:
                 try:
-                    invoice_sync.mongodb_exporter.export_invoices(invoices)
-                finally:
-                    invoice_sync.mongodb_exporter.close_connections()
+                    repo = MongoInvoiceRepository()
+                    owner = (user.get('email') or '').lower()
+                    doc = map_invoice(inv, fuente="XML_NATIVO" if getattr(inv, 'cdc', '') else "OPENAI_VISION")
+                    if owner:
+                        try:
+                            doc.header.owner_email = owner
+                            for it in doc.items:
+                                it.owner_email = owner
+                        except Exception:
+                            pass
+                    repo.save_document(doc)
+                except Exception as e:
+                    logger.error(f"❌ Error persistiendo v2 (tasks upload XML): {e}")
             return ProcessResult(
                 success=bool(invoices),
-                message=("Factura XML procesada y almacenada en MongoDB" if invoices else "No se pudo extraer información desde el XML"),
+                message=("Factura XML procesada y almacenada (v2)" if invoices else "No se pudo extraer información desde el XML"),
                 invoice_count=len(invoices),
                 invoices=invoices
             )
@@ -461,19 +543,19 @@ async def enqueue_upload_xml(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/excel")
-async def get_excel():
+async def get_excel(user: Dict[str, Any] = Depends(_get_current_user)):
     raise HTTPException(status_code=410, detail="Exportación a Excel deshabilitada")
 
 @app.get("/excel/list")
-async def list_excel_files():
+async def list_excel_files(user: Dict[str, Any] = Depends(_get_current_user)):
     raise HTTPException(status_code=410, detail="Exportación a Excel deshabilitada")
 
 @app.get("/excel/{year_month}")
-async def get_excel_by_month(year_month: str):
+async def get_excel_by_month(year_month: str, user: Dict[str, Any] = Depends(_get_current_user)):
     raise HTTPException(status_code=410, detail="Exportación a Excel deshabilitada")
 
 @app.post("/email-config/test")
-async def test_email_config(config: MultiEmailConfig):
+async def test_email_config(config: MultiEmailConfig, user: Dict[str, Any] = Depends(_get_current_user)):
     """
     Prueba la conexión a una configuración de correo.
     
@@ -491,10 +573,11 @@ async def test_email_config(config: MultiEmailConfig):
         pwd = config.password
         if not pwd:
             db_cfg = None
+            owner_email = (user.get('email') or '').lower()
             if config.id:
-                db_cfg = db_get_by_id(config.id, include_password=True)
+                db_cfg = db_get_by_id(config.id, include_password=True, owner_email=owner_email)
             if not db_cfg and config.username:
-                db_cfg = db_get_by_username(config.username, include_password=True)
+                db_cfg = db_get_by_username(config.username, include_password=True, owner_email=owner_email)
             if db_cfg and db_cfg.get("password"):
                 pwd = db_cfg.get("password")
 
@@ -525,13 +608,13 @@ async def test_email_config(config: MultiEmailConfig):
         return {"success": False, "message": f"Error: {str(e)}"}
 
 @app.post("/email-configs/{config_id}/test")
-async def test_email_config_by_id(config_id: str):
+async def test_email_config_by_id(config_id: str, user: Dict[str, Any] = Depends(_get_current_user)):
     """Prueba una configuración guardada, identificada por su ID en MongoDB."""
     try:
         from app.modules.email_processor.email_processor import EmailProcessor
         from app.models.models import EmailConfig
 
-        db_cfg = db_get_by_id(config_id, include_password=True)
+        db_cfg = db_get_by_id(config_id, include_password=True, owner_email=(user.get('email') or '').lower())
         if not db_cfg:
             raise HTTPException(status_code=404, detail="Configuración no encontrada")
 
@@ -564,9 +647,9 @@ async def test_email_config_by_id(config_id: str):
 # -----------------------------
 
 @app.get("/email-configs")
-async def list_email_configs():
+async def list_email_configs(user: Dict[str, Any] = Depends(_get_current_user)):
     try:
-        cfgs = db_list_configs(include_password=False)
+        cfgs = db_list_configs(include_password=False, owner_email=(user.get('email') or '').lower())
         return {"success": True, "configs": cfgs, "total": len(cfgs)}
     except Exception as e:
         logger.error(f"Error listando configuraciones de correo: {e}")
@@ -574,13 +657,13 @@ async def list_email_configs():
 
 
 @app.post("/email-configs")
-async def create_email_config(config: MultiEmailConfig):
+async def create_email_config(config: MultiEmailConfig, user: Dict[str, Any] = Depends(_get_current_user)):
     try:
         # Validar que password esté presente al crear
         if not config.password:
             raise HTTPException(status_code=400, detail="La contraseña es obligatoria al crear una cuenta")
         cfg_dict = config.model_dump()
-        cfg_id = db_create_config(cfg_dict)
+        cfg_id = db_create_config(cfg_dict, owner_email=(user.get('email') or '').lower())
         return {"success": True, "id": cfg_id}
     except Exception as e:
         logger.error(f"Error creando configuración de correo: {e}")
@@ -588,13 +671,13 @@ async def create_email_config(config: MultiEmailConfig):
 
 
 @app.put("/email-configs/{config_id}")
-async def update_email_config(config_id: str, config: MultiEmailConfig):
+async def update_email_config(config_id: str, config: MultiEmailConfig, user: Dict[str, Any] = Depends(_get_current_user)):
     try:
         update_data = config.model_dump()
         # Evitar sobreescribir password a null si no se envía
         if update_data.get("password") in (None, ""):
             update_data.pop("password", None)
-        ok = db_update_config(config_id, update_data)
+        ok = db_update_config(config_id, update_data, owner_email=(user.get('email') or '').lower())
         if not ok:
             raise HTTPException(status_code=404, detail="Configuración no encontrada")
         return {"success": True, "id": config_id}
@@ -606,9 +689,9 @@ async def update_email_config(config_id: str, config: MultiEmailConfig):
 
 
 @app.delete("/email-configs/{config_id}")
-async def delete_email_config(config_id: str):
+async def delete_email_config(config_id: str, user: Dict[str, Any] = Depends(_get_current_user)):
     try:
-        ok = db_delete_config(config_id)
+        ok = db_delete_config(config_id, owner_email=(user.get('email') or '').lower())
         if not ok:
             raise HTTPException(status_code=404, detail="Configuración no encontrada")
         return {"success": True}
@@ -620,9 +703,9 @@ async def delete_email_config(config_id: str):
 
 
 @app.patch("/email-configs/{config_id}/enabled")
-async def set_email_config_enabled(config_id: str, payload: ToggleEnabledPayload):
+async def set_email_config_enabled(config_id: str, payload: ToggleEnabledPayload, user: Dict[str, Any] = Depends(_get_current_user)):
     try:
-        ok = db_set_enabled(config_id, bool(payload.enabled))
+        ok = db_set_enabled(config_id, bool(payload.enabled), owner_email=(user.get('email') or '').lower())
         if not ok:
             raise HTTPException(status_code=404, detail="Configuración no encontrada")
         return {"success": True, "enabled": bool(payload.enabled)}
@@ -634,9 +717,9 @@ async def set_email_config_enabled(config_id: str, payload: ToggleEnabledPayload
 
 
 @app.post("/email-configs/{config_id}/toggle")
-async def toggle_email_config_enabled(config_id: str):
+async def toggle_email_config_enabled(config_id: str, user: Dict[str, Any] = Depends(_get_current_user)):
     try:
-        new_val = db_toggle_enabled(config_id)
+        new_val = db_toggle_enabled(config_id, owner_email=(user.get('email') or '').lower())
         if new_val is None:
             raise HTTPException(status_code=404, detail="Configuración no encontrada")
         return {"success": True, "enabled": new_val}
@@ -658,7 +741,7 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 @app.get("/status")
-async def get_status():
+async def get_status(user: Dict[str, Any] = Depends(_get_current_user)):
     """
     Obtiene el estado actual del sistema.
     
@@ -676,7 +759,7 @@ async def get_status():
         
         # Configuraciones de correo (desde MongoDB)
         try:
-            email_configs = db_list_configs(include_password=False)
+            email_configs = db_list_configs(include_password=False, owner_email=(user.get('email') or '').lower())
         except Exception as _e:
             logger.warning(f"No se pudieron obtener configuraciones de correo desde MongoDB: {_e}")
             email_configs = []
@@ -719,6 +802,7 @@ async def v2_list_headers(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     search: Optional[str] = None,
+    user: Dict[str, Any] = Depends(_get_current_user),
 ):
     try:
         repo = MongoInvoiceRepository()
@@ -751,6 +835,11 @@ async def v2_list_headers(
                 {"receptor.nombre": {"$regex": search, "$options": "i"}},
                 {"numero_documento": {"$regex": search, "$options": "i"}},
             ]
+        # Restringir por usuario si multi-tenant
+        if settings.MULTI_TENANT_ENFORCE:
+            owner = (user.get('email') or '').lower()
+            if owner:
+                q['owner_email'] = owner
         total = coll.count_documents(q)
         cursor = coll.find(q).sort("fecha_emision", -1).skip((page-1)*page_size).limit(page_size)
         items = []
@@ -764,13 +853,23 @@ async def v2_list_headers(
         raise HTTPException(status_code=500, detail="Error listando headers")
 
 @app.get("/v2/invoices/{header_id}")
-async def v2_get_invoice(header_id: str):
+async def v2_get_invoice(header_id: str, user: Dict[str, Any] = Depends(_get_current_user)):
     try:
         repo = MongoInvoiceRepository()
-        h = repo._headers().find_one({"_id": header_id})
+        q = {"_id": header_id}
+        if settings.MULTI_TENANT_ENFORCE:
+            owner = (user.get('email') or '').lower()
+            if owner:
+                q['owner_email'] = owner
+        h = repo._headers().find_one(q)
         if not h:
             raise HTTPException(status_code=404, detail="No encontrado")
-        items = list(repo._items().find({"header_id": header_id}).sort("linea", 1))
+        iq = {"header_id": header_id}
+        if settings.MULTI_TENANT_ENFORCE:
+            owner = (user.get('email') or '').lower()
+            if owner:
+                iq['owner_email'] = owner
+        items = list(repo._items().find(iq).sort("linea", 1))
         h["id"] = h.get("_id")
         h.pop("_id", None)
         for it in items:
@@ -791,6 +890,7 @@ async def v2_list_items(
     iva: Optional[int] = Query(default=None, description="0,5,10"),
     search: Optional[str] = None,
     year_month: Optional[str] = None,
+    user: Dict[str, Any] = Depends(_get_current_user),
 ):
     try:
         repo = MongoInvoiceRepository()
@@ -805,8 +905,15 @@ async def v2_list_items(
                 pass
         if search:
             q["descripcion"] = {"$regex": search, "$options": "i"}
+        if settings.MULTI_TENANT_ENFORCE:
+            owner = (user.get('email') or '').lower()
+            if owner:
+                q['owner_email'] = owner
         if year_month and not header_id:
-            header_ids = [h["_id"] for h in repo._headers().find({"mes_proceso": year_month}, {"_id": 1})]
+            hq = {"mes_proceso": year_month}
+            if settings.MULTI_TENANT_ENFORCE and (user.get('email')):
+                hq['owner_email'] = (user.get('email') or '').lower()
+            header_ids = [h["_id"] for h in repo._headers().find(hq, {"_id": 1})]
             if header_ids:
                 q["header_id"] = {"$in": header_ids}
             else:
@@ -1024,10 +1131,10 @@ async def force_system_restart():
         
         # Reinicializar invoice_sync
         try:
-            invoice_sync = InvoiceSync()
-            logger.info("✅ InvoiceSync reinicializado")
+            invoice_sync = CuenlyApp()
+            logger.info("✅ CuenlyApp reinicializado")
         except Exception as e:
-            logger.warning(f"⚠️ Error reinicializando InvoiceSync: {e}")
+            logger.warning(f"⚠️ Error reinicializando CuenlyApp: {e}")
         
         return {
             "success": True,
@@ -1037,7 +1144,7 @@ async def force_system_restart():
                 "Job programado detenido",
                 "Tareas limpiadas", 
                 "Processing lock liberado",
-                "InvoiceSync reinicializado"
+                "CuenlyApp reinicializado"
             ]
         }
     except Exception as e:
@@ -1283,13 +1390,14 @@ async def _export_completo_month_task(year_month: str):
 # -----------------------------
 
 @app.get("/invoices/months")
-async def get_available_months():
+async def get_available_months(user: Dict[str, Any] = Depends(_get_current_user)):
     """
     Obtiene lista de meses disponibles con estadísticas básicas desde MongoDB.
     """
     try:
         query_service = get_mongo_query_service()
-        months = query_service.get_available_months()
+        owner = (user.get('email') or '').lower() if settings.MULTI_TENANT_ENFORCE else None
+        months = query_service.get_available_months(owner_email=owner)
         
         return {
             "success": True,
@@ -1301,7 +1409,7 @@ async def get_available_months():
         raise HTTPException(status_code=500, detail=f"Error obteniendo meses: {str(e)}")
 
 @app.get("/invoices/month/{year_month}")
-async def get_invoices_by_month(year_month: str):
+async def get_invoices_by_month(year_month: str, user: Dict[str, Any] = Depends(_get_current_user)):
     """
     Obtiene todas las facturas de un mes específico desde MongoDB.
     
@@ -1316,7 +1424,8 @@ async def get_invoices_by_month(year_month: str):
             raise HTTPException(status_code=400, detail="Formato de mes incorrecto. Use YYYY-MM")
         
         query_service = get_mongo_query_service()
-        invoices = query_service.get_invoices_by_month(year_month)
+        owner = (user.get('email') or '').lower() if settings.MULTI_TENANT_ENFORCE else None
+        invoices = query_service.get_invoices_by_month(year_month, owner_email=owner)
         
         return {
             "success": True,
@@ -1331,7 +1440,7 @@ async def get_invoices_by_month(year_month: str):
         raise HTTPException(status_code=500, detail=f"Error obteniendo facturas: {str(e)}")
 
 @app.get("/invoices/month/{year_month}/stats")
-async def get_month_statistics(request: Request, year_month: str):
+async def get_month_statistics(request: Request, year_month: str, user: Dict[str, Any] = Depends(_get_current_user)):
     """
     Obtiene estadísticas detalladas de un mes específico desde MongoDB.
     """
@@ -1346,7 +1455,8 @@ async def get_month_statistics(request: Request, year_month: str):
             raise HTTPException(status_code=400, detail=str(e))
         
         query_service = get_mongo_query_service()
-        stats = query_service.get_month_statistics(year_month)
+        owner = (user.get('email') or '').lower() if settings.MULTI_TENANT_ENFORCE else None
+        stats = query_service.get_month_statistics(year_month, owner_email=owner)
         
         # Log acceso a estadísticas
         logger.info(f"📊 Stats solicitadas para {year_month} por IP {client_ip}")

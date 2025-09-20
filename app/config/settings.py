@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
     # MongoDB
-    MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://invoicesync:invoicesync2025@mongodb:27017/invoicesync_warehouse?authSource=admin")
-    MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "invoicesync_warehouse")
+    MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://cuenlyapp:cuenlyapp2025@mongodb:27017/cuenlyapp_warehouse?authSource=admin")
+    MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "cuenlyapp_warehouse")
     MONGODB_COLLECTION: str = os.getenv("MONGODB_COLLECTION", "facturas_completas")
 
     # API
@@ -27,6 +27,11 @@ class Settings(BaseSettings):
 
     # Job
     JOB_INTERVAL_MINUTES: int = int(os.getenv("JOB_INTERVAL_MINUTES", 60))
+
+    # Auth / Multi-tenant
+    AUTH_REQUIRE: bool = os.getenv("AUTH_REQUIRE", "true").lower() in ("1", "true", "yes")
+    FIREBASE_PROJECT_ID: str = os.getenv("FIREBASE_PROJECT_ID", "cuenly-app")
+    MULTI_TENANT_ENFORCE: bool = os.getenv("MULTI_TENANT_ENFORCE", "true").lower() in ("1", "true", "yes")
     
     model_config = {
         "env_file": ".env",

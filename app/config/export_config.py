@@ -5,8 +5,8 @@ import os
 from typing import Optional
 
 # Configuración MongoDB - PRIMARIO
-MONGODB_CONNECTION_STRING = os.getenv("MONGODB_URL", "mongodb://invoicesync:invoicesync2025@mongodb:27017/invoicesync_warehouse?authSource=admin")
-MONGODB_DATABASE_NAME = os.getenv("MONGODB_DATABASE", "invoicesync_warehouse")
+MONGODB_CONNECTION_STRING = os.getenv("MONGODB_URL", "mongodb://cuenlyapp:cuenlyapp2025@mongodb:27017/cuenlyapp_warehouse?authSource=admin")
+MONGODB_DATABASE_NAME = os.getenv("MONGODB_DATABASE", "cuenlyapp_warehouse")
 MONGODB_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION", "facturas_completas")
 
 # MongoDB como almacenamiento primario

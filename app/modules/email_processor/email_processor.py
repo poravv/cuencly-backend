@@ -43,7 +43,7 @@ class MultiEmailProcessor:
     Orquestador multi-cuenta. Mantiene la funcionalidad anterior pero delega
     en EmailProcessor para cada cuenta. Incluye job programado.
     """
-    def __init__(self, email_configs: List[MultiEmailConfig] = None):
+    def __init__(self, email_configs: List[MultiEmailConfig] = None, owner_email: Optional[str] = None):
         if email_configs is None:
             try:
                 configs_data = get_enabled_configs(include_password=True)
@@ -55,6 +55,7 @@ class MultiEmailProcessor:
             self.email_configs = email_configs
 
         self.openai_processor = OpenAIProcessor()
+        self.owner_email = (owner_email or '').lower() if owner_email else ''
 
         ensure_dirs()
 
@@ -179,6 +180,15 @@ class MultiEmailProcessor:
             try:
                 repo = MongoInvoiceRepository()
                 docs = [map_invoice(inv, fuente="XML_NATIVO" if getattr(inv, 'cdc', '') else "OPENAI_VISION") for inv in unique]
+                # Enriquecer con owner_email si está configurado (multi-tenant)
+                if self.owner_email:
+                    for d in docs:
+                        try:
+                            d.header.owner_email = self.owner_email
+                            for it in d.items:
+                                it.owner_email = self.owner_email
+                        except Exception:
+                            pass
                 for d in docs:
                     repo.save_document(d)
                 message_suffix = f" | MongoDB repo: {len(docs)} facturas almacenadas"

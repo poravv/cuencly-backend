@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bastion-ssh
+  namespace: cuenly-backend
+  labels:
+    app: bastion-ssh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bastion-ssh
+  template:
+    metadata:
+      labels:
+        app: bastion-ssh
+    spec:
+      containers:
+        - name: sshd
+          image: lscr.io/linuxserver/openssh-server:latest
+          env:
+            - name: PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bastion-ssh
+                  key: authorized_keys
+            - name: USER_NAME
+              value: admin
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+          ports:
+            - containerPort: 2222
+              name: ssh
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bastion-ssh
+  namespace: cuenly-backend
+spec:
+  type: LoadBalancer
+  selector:
+    app: bastion-ssh
+  ports:
+    - port: 22
+      targetPort: 2222
+      protocol: TCP
+      name: ssh
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bastion-ssh-egress
+  namespace: cuenly-backend
+spec:
+  podSelector:
+    matchLabels:
+      app: bastion-ssh
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: cuenly-backend
+          podSelector:
+            matchLabels:
+              app: mongodb
+              tier: database
+      ports:
+        - protocol: TCP
+          port: 27017
+

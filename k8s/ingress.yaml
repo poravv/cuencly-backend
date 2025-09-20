@@ -1,0 +1,91 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cuenly-backend-ingress
+  namespace: cuenly-backend
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: app.cuenly.com
+      http:
+        paths:
+          - path: /v2
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /status
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /process
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /upload
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /upload-xml
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /job
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /tasks
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /prefs
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /email-config
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /email-configs
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+          - path: /invoices
+            pathType: Prefix
+            backend:
+              service:
+                name: cuenly-backend-service
+                port:
+                  number: 8000
+

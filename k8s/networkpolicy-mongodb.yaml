@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongodb-allow-backend
+  namespace: cuenly-backend
+spec:
+  podSelector:
+    matchLabels:
+      app: mongodb
+      tier: database
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: cuenly-backend
+          podSelector:
+            matchLabels:
+              app: mongodb
+        - namespaceSelector:
+            matchLabels:
+              name: cuenly-backend
+          podSelector:
+            matchLabels:
+              app: cuenly-backend
+      ports:
+        - protocol: TCP
+          port: 27017
+

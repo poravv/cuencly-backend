@@ -35,7 +35,7 @@ class MongoDBExporter:
 
     def __init__(self, 
                  connection_string: Optional[str] = None,
-                 database_name: str = "invoicesync_warehouse",
+                 database_name: str = "cuenlyapp_warehouse",
                  collection_name: str = "facturas_completas") -> None:
         
         self.connection_string = connection_string or self._get_default_connection()

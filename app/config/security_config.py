@@ -1,5 +1,5 @@
 """
-Configuración de seguridad para InvoiceSync
+Configuración de seguridad para CuenlyApp
 """
 
 import os
@@ -138,7 +138,7 @@ def get_allowed_origins() -> list:
     """
     if ENVIRONMENT == "production":
         return [
-            "https://invoicesync.yourdomain.com",
+            "https://cuenlyapp.yourdomain.com",
             "https://app.yourdomain.com"
         ]
     else:

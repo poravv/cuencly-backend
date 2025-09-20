@@ -55,6 +55,7 @@ class InvoiceHeader(BaseModel):
     email_origen: Optional[str] = ""
     mes_proceso: Optional[str] = ""
     fuente: Optional[str] = ""  # XML_NATIVO / OPENAI_VISION
+    owner_email: Optional[str] = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -69,9 +70,9 @@ class InvoiceDetail(BaseModel):
     precio_unitario: float
     total: float
     iva: int = 0  # 0, 5, 10
+    owner_email: Optional[str] = ""
 
 
 class InvoiceDocument(BaseModel):
     header: InvoiceHeader
     items: List[InvoiceDetail]
-

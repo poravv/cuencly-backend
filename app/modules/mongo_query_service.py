@@ -1,5 +1,5 @@
 """
-Servicio de consultas MongoDB para InvoiceSync
+Servicio de consultas MongoDB para CuenlyApp
 Maneja todas las consultas y agregaciones de facturas desde MongoDB
 """
 
@@ -52,7 +52,10 @@ class MongoQueryService:
                 raise
         return self._client
 
-    def get_available_months(self) -> List[Dict[str, Any]]:
+    def _is_v2(self) -> bool:
+        return str(self.collection_name).lower() in ("invoice_headers",)
+
+    def get_available_months(self, owner_email: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Obtiene lista de meses disponibles con estadísticas básicas
         
@@ -63,37 +66,53 @@ class MongoQueryService:
             client = self._get_client()
             db = client[self.database_name]
             collection = db[self.collection_name]
-            
-            pipeline = [
-                {
-                    "$match": {
-                        "factura.fecha": {"$ne": None}
-                    }
-                },
-                {
-                    "$group": {
-                        "_id": "$indices.year_month",
+
+            if self._is_v2():
+                match: Dict[str, Any] = {"fecha_emision": {"$ne": None}}
+                if owner_email:
+                    match["owner_email"] = owner_email.lower()
+                pipeline = [
+                    {"$match": match},
+                    {"$group": {
+                        "_id": "$mes_proceso",
                         "count": {"$sum": 1},
-                        "total_amount": {"$sum": "$montos.monto_total"},
-                        "first_date": {"$min": "$factura.fecha"},
-                        "last_date": {"$max": "$factura.fecha"},
+                        "total_amount": {"$sum": "$totales.total"},
+                        "first_date": {"$min": "$fecha_emision"},
+                        "last_date": {"$max": "$fecha_emision"},
                         "unique_providers": {"$addToSet": "$emisor.ruc"}
-                    }
-                },
-                {
-                    "$project": {
+                    }},
+                    {"$project": {
                         "year_month": "$_id",
                         "count": 1,
                         "total_amount": 1,
                         "first_date": 1,
                         "last_date": 1,
                         "unique_providers": {"$size": "$unique_providers"}
-                    }
-                },
-                {
-                    "$sort": {"year_month": -1}
-                }
-            ]
+                    }},
+                    {"$sort": {"year_month": -1}}
+                ]
+            else:
+                match: Dict[str, Any] = {"factura.fecha": {"$ne": None}}
+                pipeline = [
+                    {"$match": match},
+                    {"$group": {
+                        "_id": "$indices.year_month",
+                        "count": {"$sum": 1},
+                        "total_amount": {"$sum": "$montos.monto_total"},
+                        "first_date": {"$min": "$factura.fecha"},
+                        "last_date": {"$max": "$factura.fecha"},
+                        "unique_providers": {"$addToSet": "$emisor.ruc"}
+                    }},
+                    {"$project": {
+                        "year_month": "$_id",
+                        "count": 1,
+                        "total_amount": 1,
+                        "first_date": 1,
+                        "last_date": 1,
+                        "unique_providers": {"$size": "$unique_providers"}
+                    }},
+                    {"$sort": {"year_month": -1}}
+                ]
             
             results = list(collection.aggregate(pipeline))
             
@@ -117,7 +136,7 @@ class MongoQueryService:
             logger.error("Error obteniendo meses disponibles: %s", e)
             return []
 
-    def get_invoices_by_month(self, year_month: str) -> List[Dict[str, Any]]:
+    def get_invoices_by_month(self, year_month: str, owner_email: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Obtiene todas las facturas de un mes específico
         
@@ -140,7 +159,16 @@ class MongoQueryService:
                 return []
             
             # Consulta optimizada
-            query = {"indices.year_month": year_month}
+            if self._is_v2():
+                query: Dict[str, Any] = {"mes_proceso": year_month}
+                if owner_email:
+                    query["owner_email"] = owner_email.lower()
+                projection = None  # devolver header completo
+                results = list(collection.find(query, projection).sort("fecha_emision", 1))
+                logger.info("📄 Encontradas %d cabeceras v2 para %s", len(results), year_month)
+                return results
+            else:
+                query = {"indices.year_month": year_month}
             
             # Proyección para optimizar transferencia de datos
             projection = {
@@ -165,7 +193,7 @@ class MongoQueryService:
             logger.error("Error obteniendo facturas del mes %s: %s", year_month, e)
             return []
 
-    def get_month_statistics(self, year_month: str) -> Dict[str, Any]:
+    def get_month_statistics(self, year_month: str, owner_email: Optional[str] = None) -> Dict[str, Any]:
         """
         Obtiene estadísticas detalladas de un mes específico
         
@@ -180,12 +208,74 @@ class MongoQueryService:
             db = client[self.database_name]
             collection = db[self.collection_name]
             
-            pipeline = [
-                {
-                    "$match": {"indices.year_month": year_month}
-                },
-                {
-                    "$group": {
+            if self._is_v2():
+                match: Dict[str, Any] = {"mes_proceso": year_month}
+                if owner_email:
+                    match["owner_email"] = owner_email.lower()
+                pipeline = [
+                    {"$match": match},
+                    {"$group": {
+                        "_id": None,
+                        "total_facturas": {"$sum": 1},
+                        "total_monto": {"$sum": "$totales.total"},
+                        "total_iva": {"$sum": {"$add": ["$totales.iva_5", "$totales.iva_10"]}},
+                        "total_iva_5": {"$sum": "$totales.iva_5"},
+                        "total_iva_10": {"$sum": "$totales.iva_10"},
+                        "total_subtotal_5": {"$sum": "$totales.gravado_5"},
+                        "total_subtotal_10": {"$sum": "$totales.gravado_10"},
+                        "total_exentas": {"$sum": "$totales.exentas"},
+                        "promedio_factura": {"$avg": "$totales.total"},
+                        "facturas_con_cdc": {"$sum": {"$cond": [{"$ne": ["$cdc", ""]}, 1, 0]}},
+                        "facturas_con_timbrado": {"$sum": {"$cond": [{"$ne": ["$timbrado", ""]}, 1, 0]}},
+                        "xml_nativo": {"$sum": {"$cond": [{"$eq": ["$fuente", "XML_NATIVO"]}, 1, 0]}},
+                        "openai_vision": {"$sum": {"$cond": [{"$eq": ["$fuente", "OPENAI_VISION"]}, 1, 0]}},
+                        "facturas_gs": {"$sum": {"$cond": [{"$in": ["$moneda", ["GS", "PYG", None]]}, 1, 0]}},
+                        "facturas_usd": {"$sum": {"$cond": [{"$eq": ["$moneda", "USD"]}, 1, 0]}},
+                        "facturas_bajo": {"$sum": {"$cond": [{"$lte": ["$totales.total", 100000]}, 1, 0]}},
+                        "facturas_medio": {"$sum": {"$cond": [{"$and": [
+                            {"$gt": ["$totales.total", 100000]},
+                            {"$lte": ["$totales.total", 1000000]}
+                        ]}, 1, 0]}},
+                        "facturas_alto": {"$sum": {"$cond": [{"$gt": ["$totales.total", 1000000]}, 1, 0]}},
+                        "proveedores_unicos": {"$addToSet": "$emisor.ruc"},
+                        "clientes_unicos": {"$addToSet": "$receptor.ruc"},
+                        "primera_factura": {"$min": "$fecha_emision"},
+                        "ultima_factura": {"$max": "$fecha_emision"}
+                    }},
+                    {"$project": {
+                        "_id": 0,
+                        "year_month": year_month,
+                        "fecha_consulta": {"$literal": datetime.now(timezone.utc).isoformat()},
+                        "total_facturas": 1,
+                        "total_monto": 1,
+                        "total_iva": 1,
+                        "total_iva_5": 1,
+                        "total_iva_10": 1,
+                        "total_subtotal_5": 1,
+                        "total_subtotal_10": 1,
+                        "total_exentas": 1,
+                        "promedio_factura": {"$round": ["$promedio_factura", 2]},
+                        "facturas_con_cdc": 1,
+                        "facturas_con_timbrado": 1,
+                        "porcentaje_cdc": {"$round": [{"$multiply": [{"$divide": ["$facturas_con_cdc", "$total_facturas"]}, 100]}, 2]},
+                        "porcentaje_timbrado": {"$round": [{"$multiply": [{"$divide": ["$facturas_con_timbrado", "$total_facturas"]}, 100]}, 2]},
+                        "xml_nativo": 1,
+                        "openai_vision": 1,
+                        "facturas_gs": 1,
+                        "facturas_usd": 1,
+                        "facturas_bajo": 1,
+                        "facturas_medio": 1,
+                        "facturas_alto": 1,
+                        "total_proveedores": {"$size": "$proveedores_unicos"},
+                        "total_clientes": {"$size": "$clientes_unicos"},
+                        "primera_factura": 1,
+                        "ultima_factura": 1
+                    }}
+                ]
+            else:
+                pipeline = [
+                    {"$match": {"indices.year_month": year_month}},
+                    {"$group": {
                         "_id": None,
                         "total_facturas": {"$sum": 1},
                         "total_monto": {"$sum": "$montos.monto_total"},
@@ -196,61 +286,27 @@ class MongoQueryService:
                         "total_subtotal_10": {"$sum": "$montos.subtotal_10"},
                         "total_exentas": {"$sum": "$montos.subtotal_exentas"},
                         "promedio_factura": {"$avg": "$montos.monto_total"},
-                        
-                        # Calidad de datos
-                        "facturas_con_cdc": {
-                            "$sum": {"$cond": ["$indices.has_cdc", 1, 0]}
-                        },
-                        "facturas_con_timbrado": {
-                            "$sum": {"$cond": ["$indices.has_timbrado", 1, 0]}
-                        },
-                        
-                        # Fuentes de datos
-                        "xml_nativo": {
-                            "$sum": {"$cond": [{"$eq": ["$metadata.fuente", "XML_NATIVO"]}, 1, 0]}
-                        },
-                        "openai_vision": {
-                            "$sum": {"$cond": [{"$eq": ["$metadata.fuente", "OPENAI_VISION"]}, 1, 0]}
-                        },
-                        
-                        # Distribución por moneda
-                        "facturas_gs": {
-                            "$sum": {"$cond": [{"$in": ["$factura.moneda", ["GS", "PYG", None]]}, 1, 0]}
-                        },
-                        "facturas_usd": {
-                            "$sum": {"$cond": [{"$eq": ["$factura.moneda", "USD"]}, 1, 0]}
-                        },
-                        
-                        # Rangos de montos
-                        "facturas_bajo": {
-                            "$sum": {"$cond": [{"$lte": ["$montos.monto_total", 100000]}, 1, 0]}
-                        },
-                        "facturas_medio": {
-                            "$sum": {"$cond": [{"$and": [
-                                {"$gt": ["$montos.monto_total", 100000]},
-                                {"$lte": ["$montos.monto_total", 1000000]}
-                            ]}, 1, 0]}
-                        },
-                        "facturas_alto": {
-                            "$sum": {"$cond": [{"$gt": ["$montos.monto_total", 1000000]}, 1, 0]}
-                        },
-                        
-                        # Proveedores y clientes únicos
+                        "facturas_con_cdc": {"$sum": {"$cond": ["$indices.has_cdc", 1, 0]}},
+                        "facturas_con_timbrado": {"$sum": {"$cond": ["$indices.has_timbrado", 1, 0]}},
+                        "xml_nativo": {"$sum": {"$cond": [{"$eq": ["$metadata.fuente", "XML_NATIVO"]}, 1, 0]}},
+                        "openai_vision": {"$sum": {"$cond": [{"$eq": ["$metadata.fuente", "OPENAI_VISION"]}, 1, 0]}},
+                        "facturas_gs": {"$sum": {"$cond": [{"$in": ["$factura.moneda", ["GS", "PYG", None]]}, 1, 0]}},
+                        "facturas_usd": {"$sum": {"$cond": [{"$eq": ["$factura.moneda", "USD"]}, 1, 0]}},
+                        "facturas_bajo": {"$sum": {"$cond": [{"$lte": ["$montos.monto_total", 100000]}, 1, 0]}},
+                        "facturas_medio": {"$sum": {"$cond": [{"$and": [
+                            {"$gt": ["$montos.monto_total", 100000]},
+                            {"$lte": ["$montos.monto_total", 1000000]}
+                        ]}, 1, 0]}},
+                        "facturas_alto": {"$sum": {"$cond": [{"$gt": ["$montos.monto_total", 1000000]}, 1, 0]}},
                         "proveedores_unicos": {"$addToSet": "$emisor.ruc"},
                         "clientes_unicos": {"$addToSet": "$receptor.ruc"},
-                        
-                        # Fechas extremas
                         "primera_factura": {"$min": "$factura.fecha"},
                         "ultima_factura": {"$max": "$factura.fecha"}
-                    }
-                },
-                {
-                    "$project": {
+                    }},
+                    {"$project": {
                         "_id": 0,
                         "year_month": year_month,
                         "fecha_consulta": {"$literal": datetime.now(timezone.utc).isoformat()},
-                        
-                        # Contadores principales
                         "total_facturas": 1,
                         "total_monto": 1,
                         "total_iva": 1,
@@ -260,40 +316,23 @@ class MongoQueryService:
                         "total_subtotal_10": 1,
                         "total_exentas": 1,
                         "promedio_factura": {"$round": ["$promedio_factura", 2]},
-                        
-                        # Calidad de datos
                         "facturas_con_cdc": 1,
                         "facturas_con_timbrado": 1,
-                        "porcentaje_cdc": {
-                            "$round": [{"$multiply": [{"$divide": ["$facturas_con_cdc", "$total_facturas"]}, 100]}, 2]
-                        },
-                        "porcentaje_timbrado": {
-                            "$round": [{"$multiply": [{"$divide": ["$facturas_con_timbrado", "$total_facturas"]}, 100]}, 2]
-                        },
-                        
-                        # Fuentes
+                        "porcentaje_cdc": {"$round": [{"$multiply": [{"$divide": ["$facturas_con_cdc", "$total_facturas"]}, 100]}, 2]},
+                        "porcentaje_timbrado": {"$round": [{"$multiply": [{"$divide": ["$facturas_con_timbrado", "$total_facturas"]}, 100]}, 2]},
                         "xml_nativo": 1,
                         "openai_vision": 1,
-                        
-                        # Monedas
                         "facturas_gs": 1,
                         "facturas_usd": 1,
-                        
-                        # Rangos
                         "facturas_bajo": 1,
                         "facturas_medio": 1,
                         "facturas_alto": 1,
-                        
-                        # Únicos
                         "total_proveedores": {"$size": "$proveedores_unicos"},
                         "total_clientes": {"$size": "$clientes_unicos"},
-                        
-                        # Fechas
                         "primera_factura": 1,
                         "ultima_factura": 1
-                    }
-                }
-            ]
+                    }}
+                ]
             
             result = list(collection.aggregate(pipeline))
             
