@@ -1,0 +1,189 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci-cd.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci-cd.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-backend
+  NAMESPACE: cuenly-backend
+  DOCKER_BUILDKIT: "1"
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+    name: Build and Deploy Backend + MongoDB
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Ensure namespace exists
+        run: |
+          kubectl get ns ${{ env.NAMESPACE }} || kubectl create ns ${{ env.NAMESPACE }}
+
+      - name: Create/Update image pull secret (GHCR)
+        run: |
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GHCR_PAT }} \
+            --namespace=${{ env.NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create/Update backend env secrets
+        run: |
+          set -euo pipefail
+          kubectl delete secret backend-env-secrets -n ${{ env.NAMESPACE }} --ignore-not-found=true
+          kubectl create secret generic backend-env-secrets \
+            --namespace=${{ env.NAMESPACE }} \
+            --from-literal=MONGODB_URL="${{ secrets.MONGODB_URL }}" \
+            --from-literal=MONGODB_DATABASE="${{ secrets.MONGODB_DATABASE }}" \
+            --from-literal=MONGODB_COLLECTION="${{ secrets.MONGODB_COLLECTION }}" \
+            --from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
+            --from-literal=API_HOST="${{ secrets.API_HOST }}" \
+            --from-literal=API_PORT="${{ secrets.API_PORT }}" \
+            --from-literal=LOG_LEVEL="${{ secrets.LOG_LEVEL }}" \
+            --from-literal=TEMP_PDF_DIR="${{ secrets.TEMP_PDF_DIR }}" \
+            --from-literal=JOB_INTERVAL_MINUTES="${{ secrets.JOB_INTERVAL_MINUTES }}" \
+            --from-literal=AUTH_REQUIRE="${{ secrets.AUTH_REQUIRE }}" \
+            --from-literal=FIREBASE_PROJECT_ID="${{ secrets.FIREBASE_PROJECT_ID }}" \
+            --from-literal=MULTI_TENANT_ENFORCE="${{ secrets.MULTI_TENANT_ENFORCE }}"
+
+      - name: Create/Update MongoDB secrets
+        run: |
+          set -euo pipefail
+          kubectl delete secret cuenly-backend-secrets -n ${{ env.NAMESPACE }} --ignore-not-found=true
+          kubectl create secret generic cuenly-backend-secrets \
+            --namespace=${{ env.NAMESPACE }} \
+            --from-literal=mongodb-root-username="${{ secrets.MONGODB_ROOT_USERNAME }}" \
+            --from-literal=mongodb-root-password="${{ secrets.MONGODB_ROOT_PASSWORD }}" \
+            --from-literal=mongodb-database="${{ secrets.MONGODB_DATABASE }}"
+      - name: Create/Update MongoDB keyFile secret
+        run: |
+          set -euo pipefail
+          kubectl delete secret mongodb-keyfile -n ${{ env.NAMESPACE }} --ignore-not-found=true
+          kubectl create secret generic mongodb-keyfile \
+            --namespace=${{ env.NAMESPACE }} \
+            --from-literal=keyfile="${{ secrets.MONGODB_KEYFILE }}"
+
+      - name: Apply backend Config (secrets-only)
+        run: |
+          echo "ConfigMap no requerido: variables cargadas desde Secrets (backend-env-secrets)"
+
+      - name: Deploy MongoDB (Replica Set)
+        run: |
+          set -euo pipefail
+          kubectl apply -f backend/k8s/mongodb-replicaset.yaml -n ${{ env.NAMESPACE }}
+          kubectl rollout status statefulset/mongodb -n ${{ env.NAMESPACE }} --timeout=600s
+          kubectl wait --for=condition=ready pod -l app=mongodb -n ${{ env.NAMESPACE }} --timeout=600s
+
+      - name: Apply backend NetworkPolicies
+        run: |
+          kubectl apply -f backend/k8s/networkpolicy-mongodb.yaml -n ${{ env.NAMESPACE }}
+          kubectl apply -f backend/k8s/networkpolicy-backend.yaml -n ${{ env.NAMESPACE }}
+
+      - name: Ensure app user exists
+        run: |
+          set -euo pipefail
+          kubectl apply -f backend/k8s/mongodb-appuser-job.yaml -n ${{ env.NAMESPACE }}
+          kubectl wait --for=condition=complete job/mongodb-appuser -n ${{ env.NAMESPACE }} --timeout=300s
+
+      - name: Deploy backend
+        run: |
+          set -euo pipefail
+          kubectl apply -f backend/k8s/deployment.yaml -n ${{ env.NAMESPACE }}
+          SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)
+          kubectl set image deployment/cuenly-backend cuenly-backend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA} -n ${{ env.NAMESPACE }}
+          kubectl rollout status deployment/cuenly-backend -n ${{ env.NAMESPACE }} --timeout=300s
+
+      - name: Deploy backend ingress (API paths)
+        run: |
+          kubectl apply -f backend/k8s/ingress.yaml -n ${{ env.NAMESPACE }}
+
+      - name: (Optional) Deploy SSH bastion
+        if: ${{ secrets.BASTION_ENABLE == 'true' }}
+        env:
+          CIDRS: ${{ secrets.BASTION_CIDRS }}
+        run: |
+          set -euo pipefail
+          # secrets: BASTION_PUBLIC_KEY (ssh-rsa ...), BASTION_CIDRS (comma separated CIDRs)
+          kubectl delete secret bastion-ssh -n ${{ env.NAMESPACE }} --ignore-not-found=true
+          kubectl create secret generic bastion-ssh \
+            --namespace=${{ env.NAMESPACE }} \
+            --from-literal=authorized_keys="${{ secrets.BASTION_PUBLIC_KEY }}"
+          kubectl apply -f backend/k8s/bastion-ssh.yaml -n ${{ env.NAMESPACE }}
+          if [ -n "$CIDRS" ]; then \
+            arr=$(echo "$CIDRS" | awk -F',' '{printf "[\"%s\"", $1; for(i=2;i<=NF;i++) printf ", \"%s\"", $i; print "]"}'); \
+            kubectl patch svc bastion-ssh -n ${{ env.NAMESPACE }} --type=merge -p "{\"spec\":{\"loadBalancerSourceRanges\":$arr}}"; \
+          fi
+
+      - name: Backend health check (ClusterIP)
+        run: |
+          set -euo pipefail
+          BACKEND_IP=$(kubectl get svc cuenly-backend-service -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+          for i in $(seq 1 12); do
+            if curl -fsS "http://${BACKEND_IP}:8000/health" > /dev/null; then
+              echo "✅ Backend healthy"; exit 0; fi
+            echo "Attempt $i/12 failed; retrying in 10s..."; sleep 10; done
+          echo "❌ Backend health check failed"; exit 1
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "📋 Deployment Summary:"
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          kubectl get svc -n ${{ env.NAMESPACE }}
