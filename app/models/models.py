@@ -275,5 +275,8 @@ class JobStatus(BaseModel):
     interval_minutes: int
     last_run: Optional[str] = None
     last_result: Optional[ProcessResult] = None
+    # Timestamps en epoch (segundos) para facilitar cálculos en el frontend
+    next_run_ts: Optional[int] = None
+    last_run_ts: Optional[int] = None
 
 # Modelos de Excel removidos

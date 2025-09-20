@@ -268,8 +268,20 @@ class InvoiceSync:
                             return str(v)
                         except Exception:
                             return None
-                    self._job_status.next_run = _to_iso(sched.get('next_run'))
-                    self._job_status.last_run = _to_iso(sched.get('last_run'))
+                    next_iso = _to_iso(sched.get('next_run'))
+                    last_iso = _to_iso(sched.get('last_run'))
+                    self._job_status.next_run = next_iso
+                    self._job_status.last_run = last_iso
+                    # También timestamps en epoch
+                    from datetime import datetime
+                    try:
+                        self._job_status.next_run_ts = int(datetime.fromisoformat(next_iso).timestamp()) if next_iso else None
+                    except Exception:
+                        self._job_status.next_run_ts = None
+                    try:
+                        self._job_status.last_run_ts = int(datetime.fromisoformat(last_iso).timestamp()) if last_iso else None
+                    except Exception:
+                        self._job_status.last_run_ts = None
                     self._job_status.interval_minutes = int(sched.get('interval_minutes', self._job_status.interval_minutes))
                     # last_result si viene como ProcessResult compatible
                     lr = sched.get('last_result')
@@ -280,11 +292,23 @@ class InvoiceSync:
             else:
                 # Estimación si no hay estado del scheduler
                 if self._job_status.running:
-                    self._job_status.next_run = self._calculate_next_run()
+                    next_iso = self._calculate_next_run()
+                    self._job_status.next_run = next_iso
+                    try:
+                        from datetime import datetime
+                        self._job_status.next_run_ts = int(datetime.fromisoformat(next_iso).timestamp()) if next_iso else None
+                    except Exception:
+                        self._job_status.next_run_ts = None
         except Exception:
             # Respaldo: estimación simple
             if self._job_status.running:
-                self._job_status.next_run = self._calculate_next_run()
+                next_iso = self._calculate_next_run()
+                self._job_status.next_run = next_iso
+                try:
+                    from datetime import datetime
+                    self._job_status.next_run_ts = int(datetime.fromisoformat(next_iso).timestamp()) if next_iso else None
+                except Exception:
+                    self._job_status.next_run_ts = None
         
         return self._job_status
 

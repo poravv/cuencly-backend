@@ -24,7 +24,9 @@ from app.modules.scheduler.task_queue import task_queue
 from app.modules.email_processor.storage import save_binary
 from app.modules.prefs.prefs import get_auto_refresh as prefs_get_auto_refresh, set_auto_refresh as prefs_set_auto_refresh
 from app.modules.mongo_exporter import MongoDBExporter
+from app.repositories.mongo_invoice_repository import MongoInvoiceRepository
 from app.modules.mongo_query_service import get_mongo_query_service
+from app.repositories.mongo_invoice_repository import MongoInvoiceRepository
 from app.modules.email_processor.config_store import (
     list_configs as db_list_configs,
     create_config as db_create_config,
@@ -702,6 +704,124 @@ async def get_status():
     except Exception as e:
         logger.error(f"Error al obtener estado: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener estado: {str(e)}")
+
+# -----------------------------
+# V2 Invoices (headers + items)
+# -----------------------------
+
+@app.get("/v2/invoices/headers")
+async def v2_list_headers(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+    ruc_emisor: Optional[str] = None,
+    ruc_receptor: Optional[str] = None,
+    year_month: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    try:
+        repo = MongoInvoiceRepository()
+        coll = repo._headers()
+        q = {}
+        if ruc_emisor:
+            q["emisor.ruc"] = ruc_emisor
+        if ruc_receptor:
+            q["receptor.ruc"] = ruc_receptor
+        if year_month:
+            q["mes_proceso"] = year_month
+        from datetime import datetime
+        if date_from or date_to:
+            rng = {}
+            if date_from:
+                try:
+                    rng["$gte"] = datetime.fromisoformat(date_from)
+                except Exception:
+                    pass
+            if date_to:
+                try:
+                    rng["$lte"] = datetime.fromisoformat(date_to)
+                except Exception:
+                    pass
+            if rng:
+                q["fecha_emision"] = rng
+        if search:
+            q["$or"] = [
+                {"emisor.nombre": {"$regex": search, "$options": "i"}},
+                {"receptor.nombre": {"$regex": search, "$options": "i"}},
+                {"numero_documento": {"$regex": search, "$options": "i"}},
+            ]
+        total = coll.count_documents(q)
+        cursor = coll.find(q).sort("fecha_emision", -1).skip((page-1)*page_size).limit(page_size)
+        items = []
+        for d in cursor:
+            d["id"] = d.get("_id")
+            d.pop("_id", None)
+            items.append(d)
+        return {"success": True, "page": page, "page_size": page_size, "total": total, "data": items}
+    except Exception as e:
+        logger.error(f"Error listando headers v2: {e}")
+        raise HTTPException(status_code=500, detail="Error listando headers")
+
+@app.get("/v2/invoices/{header_id}")
+async def v2_get_invoice(header_id: str):
+    try:
+        repo = MongoInvoiceRepository()
+        h = repo._headers().find_one({"_id": header_id})
+        if not h:
+            raise HTTPException(status_code=404, detail="No encontrado")
+        items = list(repo._items().find({"header_id": header_id}).sort("linea", 1))
+        h["id"] = h.get("_id")
+        h.pop("_id", None)
+        for it in items:
+            it["id"] = str(it.get("_id"))
+            it.pop("_id", None)
+        return {"success": True, "header": h, "items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error obteniendo invoice v2: {e}")
+        raise HTTPException(status_code=500, detail="Error obteniendo invoice")
+
+@app.get("/v2/invoices/items")
+async def v2_list_items(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    header_id: Optional[str] = None,
+    iva: Optional[int] = Query(default=None, description="0,5,10"),
+    search: Optional[str] = None,
+    year_month: Optional[str] = None,
+):
+    try:
+        repo = MongoInvoiceRepository()
+        items_coll = repo._items()
+        q: Dict[str, Any] = {}
+        if header_id:
+            q["header_id"] = header_id
+        if iva is not None:
+            try:
+                q["iva"] = int(iva)
+            except Exception:
+                pass
+        if search:
+            q["descripcion"] = {"$regex": search, "$options": "i"}
+        if year_month and not header_id:
+            header_ids = [h["_id"] for h in repo._headers().find({"mes_proceso": year_month}, {"_id": 1})]
+            if header_ids:
+                q["header_id"] = {"$in": header_ids}
+            else:
+                return {"success": True, "page": page, "page_size": page_size, "total": 0, "data": []}
+        total = items_coll.count_documents(q)
+        cursor = items_coll.find(q).sort([("header_id", 1), ("linea", 1)]).skip((page-1)*page_size).limit(page_size)
+        data = []
+        for d in cursor:
+            d["id"] = str(d.get("_id"))
+            d.pop("_id", None)
+            data.append(d)
+        return {"success": True, "page": page, "page_size": page_size, "total": total, "data": data}
+    except Exception as e:
+        logger.error(f"Error listando items v2: {e}")
+        raise HTTPException(status_code=500, detail="Error listando items")
 
 @app.post("/job/start", response_model=JobStatus)
 async def start_job():

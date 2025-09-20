@@ -51,6 +51,58 @@ def base_text_schema() -> Dict[str, Any]:
         ]
     }
 
+def v2_header_detail_schema() -> Dict[str, Any]:
+    return {
+        "header": {
+            "cdc": "opcional, 44 dígitos si existe",
+            "tipo_documento": "CO o CR",
+            "establecimiento": "026",
+            "punto": "002",
+            "numero": "0196590",
+            "numero_documento": "026-002-0196590",
+            "fecha_emision": "YYYY-MM-DD",
+            "condicion_venta": "CONTADO o CREDITO",
+            "moneda": "GS o USD",
+            "tipo_cambio": 0,
+            "timbrado": "opcional",
+            "emisor": {"ruc": "", "nombre": "", "email": ""},
+            "receptor": {"ruc": "", "nombre": "", "email": ""},
+            "totales": {
+                "exentas": 0,
+                "gravado_5": 0,
+                "iva_5": 0,
+                "gravado_10": 0,
+                "iva_10": 0,
+                "total": 0
+            }
+        },
+        "items": [
+            {
+                "linea": 1,
+                "descripcion": "",
+                "cantidad": 1,
+                "unidad": "",
+                "precio_unitario": 0,
+                "total": 0,
+                "iva": 0
+            }
+        ]
+    }
+
+def build_image_prompt_v2() -> str:
+    schema = json.dumps(v2_header_detail_schema(), ensure_ascii=False, indent=2)
+    return f"""
+Analiza la imagen de una factura paraguaya y devuelve **solo** un JSON válido con la siguiente estructura (cabecera + detalle):
+
+{schema}
+
+Reglas:
+- `gravado_5` y `gravado_10` son montos base imponible (sin IVA).
+- Si solo tienes IVA: `gravado_10 = iva_10 * 10`, `gravado_5 = iva_5 * 20`.
+- Moneda: "GS" para Guaraníes, "USD" para Dólares. No conviertas.
+- condicion_venta: CONTADO o CREDITO. tipo_documento: CO (CONTADO) o CR (CREDITO).
+""".strip()
+
 # CAMPOS ELIMINADOS (no se usan en export):
 # - actividad_economica
 # - empresa (nombre, ruc, direccion, telefono, actividad_economica)

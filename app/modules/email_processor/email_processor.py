@@ -13,7 +13,8 @@ from datetime import datetime
 from app.config.settings import settings
 from app.models.models import EmailConfig, MultiEmailConfig, InvoiceData, ProcessResult
 from app.modules.openai_processor.openai_processor import OpenAIProcessor
-from app.modules.mongo_exporter import MongoDBExporter
+from app.repositories.mongo_invoice_repository import MongoInvoiceRepository
+from app.modules.mapping.invoice_mapping import map_invoice
 
 
 from app.modules.email_processor.errors import OpenAIFatalError, OpenAIRetryableError
@@ -174,25 +175,20 @@ class MultiEmailProcessor:
             unique = self._remove_duplicate_invoices(all_invoices)
             logger.info(f"Facturas únicas después de eliminar duplicados: {len(unique)} (originales: {len(all_invoices)})")
 
-            # Exportar a MongoDB directamente en modo scheduler/runner
+            # Persistir en MongoDB (cabecera + detalle)
             try:
-                exporter = MongoDBExporter()
-                mongo_result = exporter.export_invoices(unique)
-                inserted = int(mongo_result.get('inserted', 0))
-                updated = int(mongo_result.get('updated', 0))
-                logger.info(f"💾 MongoDB export: {inserted} insertados, {updated} actualizados")
-                # Enriquecer mensaje final
-                if inserted or updated:
-                    message_suffix = f" | MongoDB: {inserted} insertados, {updated} actualizados"
-                    # message variable defined later; we'll append after computing base message
-                else:
-                    message_suffix = ""
+                repo = MongoInvoiceRepository()
+                docs = [map_invoice(inv, fuente="XML_NATIVO" if getattr(inv, 'cdc', '') else "OPENAI_VISION") for inv in unique]
+                for d in docs:
+                    repo.save_document(d)
+                message_suffix = f" | MongoDB repo: {len(docs)} facturas almacenadas"
+                logger.info(f"💾 MongoDB repo: {len(docs)} documentos (cabecera + detalle)")
             except Exception as e:
-                logger.error(f"❌ Error exportando a MongoDB (scheduler): {e}")
+                logger.error(f"❌ Error persistiendo en MongoDB (repo): {e}")
                 message_suffix = f" | ⚠️ Error MongoDB: {str(e)}"
             finally:
                 try:
-                    exporter.close_connections()
+                    repo.close()
                 except Exception:
                     pass
             all_invoices = unique
@@ -585,6 +581,15 @@ class EmailProcessor:
                         # Marcar leído si hubo procesamiento OK
                     if processed:
                         self.client.mark_seen(eid)
+                        # Limpieza de temporales asociados a este correo
+                        try:
+                            import os
+                            if xml_path and os.path.exists(xml_path):
+                                os.remove(xml_path)
+                            if pdf_path and os.path.exists(pdf_path):
+                                os.remove(pdf_path)
+                        except Exception:
+                            pass
                     else:
                         logger.warning(f"⚠️ Ninguna factura procesada del correo {eid}, no se marcará como leído.")
 
@@ -605,18 +610,18 @@ class EmailProcessor:
             # Persistir en MongoDB (automatizado y manual comparten esta ruta)
             if result.invoices:
                 try:
-                    exporter = MongoDBExporter()
-                    mongo_result = exporter.export_invoices(result.invoices)
-                    ins = int(mongo_result.get('inserted', 0))
-                    upd = int(mongo_result.get('updated', 0))
-                    logger.info(f"💾 MongoDB export (single): {ins} insertados, {upd} actualizados")
-                    result.message = f"Se procesaron {result.invoice_count} facturas. MongoDB: {ins} insertados, {upd} actualizados"
+                    repo = MongoInvoiceRepository()
+                    docs = [map_invoice(inv, fuente="XML_NATIVO" if getattr(inv, 'cdc', '') else "OPENAI_VISION") for inv in result.invoices]
+                    for d in docs:
+                        repo.save_document(d)
+                    logger.info(f"💾 MongoDB (repo): {len(docs)} facturas almacenadas")
+                    result.message = f"Se procesaron {result.invoice_count} facturas. Persistidas en MongoDB (cabecera + detalle)"
                 except Exception as e:
-                    logger.error(f"❌ Error exportando a MongoDB (single): {e}")
+                    logger.error(f"❌ Error persistiendo en MongoDB (repo): {e}")
                     result.message = f"Se procesaron {result.invoice_count} facturas, pero falló la persistencia en MongoDB"
                 finally:
                     try:
-                        exporter.close_connections()
+                        repo.close()
                     except Exception:
                         pass
 

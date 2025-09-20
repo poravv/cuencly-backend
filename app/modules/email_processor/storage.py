@@ -76,6 +76,28 @@ def save_binary(content: bytes, filename: str, force_pdf: bool = False) -> str:
         logger.error(f"❌ Error al guardar archivo {filename}: {e}")
         return ""
 
+def cleanup_temp_dir(older_than_hours: int = 24) -> int:
+    """Elimina archivos en el dir temporal más viejo que X horas."""
+    import time
+    base_dir = _resolve_base_dir()
+    cutoff = time.time() - older_than_hours * 3600
+    removed = 0
+    try:
+        for name in os.listdir(base_dir):
+            p = os.path.join(base_dir, name)
+            try:
+                if not os.path.isfile(p):
+                    continue
+                st = os.stat(p)
+                if st.st_mtime < cutoff:
+                    os.remove(p)
+                    removed += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return removed
+
 def filename_from_url(url: str, extension: str) -> str:
     """Intenta construir nombre informativo desde la URL; fallback a dominio+hash."""
     ts = int(time.time())

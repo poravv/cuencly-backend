@@ -7,7 +7,7 @@ from .config import OpenAIConfig
 from .clients import make_openai_client
 from .pdf_text import extract_text_with_fallbacks, has_extractable_text_or_ocr
 from .image_utils import pdf_to_base64_first_page, ocr_from_base64_image
-from .prompts import build_text_prompt, build_image_prompt, build_xml_prompt, messages_user_only, messages_user_with_image
+from .prompts import build_text_prompt, build_image_prompt, build_xml_prompt, build_image_prompt_v2, messages_user_only, messages_user_with_image
 from .json_utils import extract_and_normalize_json
 from .cdc import validate_and_enhance_with_cdc
 from .cache import OpenAICache
@@ -252,18 +252,16 @@ class OpenAIProcessor:
 
     def _process_as_image(self, pdf_path: str, email_metadata: Optional[Dict[str, Any]] = None):
         base64_img = pdf_to_base64_first_page(pdf_path)
-        # OCR rápido como atajo si el Vision falla o para texto dominante
+        # OCR rápido como complemento del prompt v2 (se adjunta como texto adicional)
         ocr_text = ocr_from_base64_image(base64_img)
+        if ocr_text and any(kw in ocr_text.lower() for kw in ["nota de remisión", "remisión electrónica", "nota de entrega", "remisión de mercaderías"]):
+            logger.warning("Documento detectado como Nota de Remisión. Se omite.")
+            return None
+
+        prompt = build_image_prompt_v2()
         if ocr_text:
-            # filtro Nota de Remisión
-            if any(kw in ocr_text.lower() for kw in ["nota de remisión", "remisión electrónica", "nota de entrega", "remisión de mercaderías"]):
-                logger.warning("Documento detectado como Nota de Remisión. Se omite.")
-                return None
-            prompt = build_text_prompt(ocr_text)
-            messages = messages_user_only(prompt)
-        else:
-            prompt = build_image_prompt()
-            messages = messages_user_with_image(prompt, base64_img)
+            prompt = prompt + "\n\nTexto OCR preliminar (ayuda, si aplica):\n" + ocr_text[:4000]
+        messages = messages_user_with_image(prompt, base64_img)
 
         raw = self.client.chat_json(
             model=self.cfg.model,
@@ -273,11 +271,16 @@ class OpenAIProcessor:
         )
         try:
             data = extract_and_normalize_json(raw)
-            invoice = _coerce_invoice_model(data, email_metadata)
+            # Detectar esquema v2 (cabecera + items)
+            if isinstance(data, dict) and ("header" in data and "items" in data):
+                v1 = _convert_v2_to_v1_dict(data)
+                invoice = _coerce_invoice_model(v1, email_metadata)
+            else:
+                invoice = _coerce_invoice_model(data, email_metadata)
             invoice = validate_and_enhance_with_cdc(invoice)
             return invoice
         except Exception as e:
-            logger.warning("Fallo procesando JSON de imagen: %s", e)
+            logger.warning("Fallo procesando JSON de imagen (v2/v1): %s", e)
             return None
 
 # --------------------------------------------------------------- Helpers -----
@@ -295,3 +298,55 @@ def _coerce_invoice_model(data: Dict[str, Any], email_metadata: Optional[Dict[st
         if email_metadata:
             data = {**data, "_email_meta": email_metadata}
         return data
+
+
+def _convert_v2_to_v1_dict(v2: Dict[str, Any]) -> Dict[str, Any]:
+    """Convierte JSON v2 (header+items) a dict compatible con InvoiceData.from_dict"""
+    h = v2.get("header") or {}
+    t = (h.get("totales") or {})
+    emisor = h.get("emisor") or {}
+    receptor = h.get("receptor") or {}
+    items = v2.get("items") or []
+
+    numero_doc = h.get("numero_documento") or ""
+    fecha = h.get("fecha_emision") or ""
+    condicion = (h.get("condicion_venta") or "CONTADO").upper()
+    tipo_doc = (h.get("tipo_documento") or ("CR" if "CREDITO" in condicion else "CO")).upper()
+    moneda = (h.get("moneda") or "GS").upper()
+
+    productos = []
+    for it in items:
+        try:
+            productos.append({
+                "articulo": it.get("descripcion", ""),
+                "cantidad": float(it.get("cantidad", 0) or 0),
+                "precio_unitario": float(it.get("precio_unitario", 0) or 0),
+                "total": float(it.get("total", 0) or 0),
+                "iva": int(it.get("iva", 0) or 0)
+            })
+        except Exception:
+            continue
+
+    v1 = {
+        "fecha": fecha,
+        "numero_factura": numero_doc,
+        "ruc_emisor": emisor.get("ruc", ""),
+        "nombre_emisor": emisor.get("nombre", ""),
+        "condicion_venta": condicion,
+        "tipo_documento": tipo_doc,
+        "tipo_cambio": float(h.get("tipo_cambio", 0) or 0),
+        "moneda": moneda,
+        "subtotal_exentas": float(t.get("exentas", 0) or 0),
+        "subtotal_5": float(t.get("gravado_5", 0) or 0),
+        "iva_5": float(t.get("iva_5", 0) or 0),
+        "subtotal_10": float(t.get("gravado_10", 0) or 0),
+        "iva_10": float(t.get("iva_10", 0) or 0),
+        "monto_total": float(t.get("total", 0) or 0),
+        "timbrado": h.get("timbrado", ""),
+        "cdc": h.get("cdc", ""),
+        "ruc_cliente": receptor.get("ruc", ""),
+        "nombre_cliente": receptor.get("nombre", ""),
+        "email_cliente": receptor.get("email", ""),
+        "productos": productos
+    }
+    return v1
